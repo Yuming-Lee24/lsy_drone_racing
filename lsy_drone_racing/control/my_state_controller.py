@@ -81,10 +81,23 @@ class MyController(Controller):
         # Environment state tracking for change detection
         self._last_gate_flags = None
         self._last_obstacle_flags = None
-        
-        # Extract gate information
+
+        # === DEBUG: Initialize debug attributes ===
+        self._debug_detour_analysis = []  # Will store analysis for each gate pair
+        self._debug_detour_summary = {}   # Will store overall summary
+        self._debug_detour_waypoints_added = []
+        self._debug_waypoints_initial = None
+        self._debug_waypoints_after_detour = None
+        self._debug_waypoints_final = None
+
+        # Extract gate information - NOW WITH COMPLETE COORDINATE FRAMES
         self.gate_positions = obs['gates_pos']
-        self.gate_normals = self._extract_gate_normals(obs['gates_quat'])
+        self.gate_normals, self.gate_y_axes, self.gate_z_axes = \
+        self._extract_gate_coordinate_frames(obs['gates_quat'])
+    
+        # # Extract gate information
+        # self.gate_positions = obs['gates_pos']
+        # self.gate_normals = self._extract_gate_normals(obs['gates_quat'])
         
         # Extract obstacle information
         self.obstacle_positions = obs['obstacles_pos']
@@ -94,7 +107,7 @@ class MyController(Controller):
         
         # Enable visualization (trajectory plotting)
         self.visualization = False
-        
+
         # Calculate waypoints 
         waypoints = self.calc_waypoints_from_gates(
             self.initial_position,
@@ -105,6 +118,25 @@ class MyController(Controller):
         )
         print(f"Initial waypoints count: {len(waypoints)}")
         print(f"Initial waypoints:\n{waypoints}")
+                
+        # === DEBUG: Save initial waypoints ===
+        self._debug_waypoints_initial = waypoints.copy()
+        
+        # Step 2: Add detour waypoints for backtracking gates (NEW!)
+        waypoints = self._add_detour_waypoints(
+            waypoints,
+            self.gate_positions,
+            self.gate_normals,
+            self.gate_y_axes,
+            self.gate_z_axes,
+            num_intermediate_points=5,
+            angle_threshold=120.0,
+            detour_distance=0.65
+        )
+        print(f"Waypoints after detour: {len(waypoints)}")
+
+        # === DEBUG: Save waypoints after detour ===
+        self._debug_waypoints_after_detour = waypoints.copy()
         
         # Apply collision avoidance
         time_params, waypoints = self._avoid_collisions(
@@ -112,8 +144,9 @@ class MyController(Controller):
             self.obstacle_positions,
             self.OBSTACLE_SAFETY_DISTANCE
         )
-        print(f"Replanned waypoints count: {len(waypoints)}")
-        print(f"Replanned waypoints:\n{waypoints}")
+
+        # === DEBUG: Save final waypoints ===
+        self._debug_waypoints_final = waypoints.copy()
         
         # Generate smooth trajectory
         self.trajectory = self._generate_trajectory(self.TRAJECTORY_DURATION, waypoints)
@@ -405,21 +438,17 @@ class MyController(Controller):
         return gate_newly_visited or obstacle_newly_visited
 
     def _replan_trajectory(self, obs: dict[str, NDArray[np.floating]], current_time: float) -> None:
-        """Replan trajectory when environment changes.
-        
-        Args:
-            obs: Current observation with updated gate/obstacle positions.
-            current_time: Current time in trajectory for logging.
-        """
+        """Replan trajectory when environment changes."""
         print(f"\n[REPLANNING] Time: {current_time:.2f}s")
         
-        # Update gate information
-        self.gate_normals = self._extract_gate_normals(obs['gates_quat'])
+        # Update gate information with complete coordinate frames
         self.gate_positions = obs['gates_pos']
+        self.gate_normals, self.gate_y_axes, self.gate_z_axes = \
+            self._extract_gate_coordinate_frames(obs['gates_quat'])
         
-        # Generate new waypoints (could use calc_waypoints_from_gates for automatic generation)
+        # Step 1: Generate new waypoints
         waypoints = self.calc_waypoints_from_gates(
-            self.initial_position ,
+            self.initial_position,
             self.gate_positions,
             self.gate_normals,
             approach_distance=0.5,
@@ -427,26 +456,271 @@ class MyController(Controller):
         )
         print(f"New waypoints count: {len(waypoints)}")
         
-        # Apply collision avoidance
+        # Step 2: Add detour waypoints
+        waypoints = self._add_detour_waypoints(
+            waypoints,
+            self.gate_positions,
+            self.gate_normals,
+            self.gate_y_axes,
+            self.gate_z_axes,
+            num_intermediate_points=5,
+            angle_threshold=120.0,
+            detour_distance=0.65
+        )
+        
+        # Step 3: Apply collision avoidance
         _, waypoints = self._avoid_collisions(
             waypoints,
             obs['obstacles_pos'],
             self.OBSTACLE_SAFETY_DISTANCE
         )
-        # self._time_step = 0    
-        # Generate new trajectory
-        self.trajectory = self._generate_trajectory(self.TRAJECTORY_DURATION, waypoints)
         
-        # Update visualization
-        # if self.visualization:
-        #     self._visualize_trajectory(
-        #         self.gate_positions,
-        #         self.gate_normals,
-        #         obstacle_positions=obs['obstacles_pos'],
-        #         trajectory=self.trajectory,
-        #         drone_position=obs['pos']
-        #     )
+        # Step 4: Generate new trajectory
+        self.trajectory = self._generate_trajectory(self.TRAJECTORY_DURATION, waypoints)
 
+    def _extract_gate_coordinate_frames(
+        self, 
+        gates_quaternions: NDArray[np.floating]
+    ) -> tuple[NDArray[np.floating], NDArray[np.floating], NDArray[np.floating]]:
+        """Extract complete local coordinate frames for each gate.
+        
+        Args:
+            gates_quaternions: Array of gate orientations as quaternions [w, x, y, z].
+            
+        Returns:
+            Tuple of (normals, y_axes, z_axes) where:
+            - normals: Gate normal vectors (x-axis in local frame, penetration direction)
+            - y_axes: Gate width direction (left-right in local frame)
+            - z_axes: Gate height direction (up-down in local frame)
+        """
+        rotations = Rotation.from_quat(gates_quaternions)
+        rotation_matrices = rotations.as_matrix()
+        
+        normals = rotation_matrices[:, :, 0]  # First column: normal (x-axis)
+        y_axes = rotation_matrices[:, :, 1]   # Second column: width (y-axis)
+        z_axes = rotation_matrices[:, :, 2]   # Third column: height (z-axis)
+        
+        return normals, y_axes, z_axes
+
+    def _add_detour_waypoints(
+        self,
+        waypoints: NDArray[np.floating],
+        gate_positions: NDArray[np.floating],
+        gate_normals: NDArray[np.floating],
+        gate_y_axes: NDArray[np.floating],
+        gate_z_axes: NDArray[np.floating],
+        num_intermediate_points: int = 5,
+        angle_threshold: float = 120.0,
+        detour_distance: float = 0.65
+    ) -> NDArray[np.floating]:
+        """Add detour waypoints for gates that require backtracking.
+        
+        Simplified version: always detour to the right (+y direction) when backtracking is detected.
+        
+        Args:
+            waypoints: Original waypoints array with shape (N, 3).
+            gate_positions: Positions of all gates.
+            gate_normals: Normal vectors (x-axes) of all gates.
+            gate_y_axes: Y-axes (width direction, left-right) of all gates.
+            gate_z_axes: Z-axes (height direction, up-down) of all gates.
+            num_intermediate_points: Number of waypoints generated per gate.
+            angle_threshold: Angle threshold in degrees for detecting backtracking.
+            detour_distance: Distance from gate center for detour waypoint.
+            
+        Returns:
+            Modified waypoints array with detour waypoints inserted.
+        """
+        num_gates = gate_positions.shape[0]
+        waypoints_list = list(waypoints)  # Convert to list for easier insertion
+        
+        # Track how many waypoints we've inserted (affects subsequent indices)
+        inserted_count = 0
+        
+        # === DEBUG: Store analysis results for each gate pair ===
+        self._debug_detour_analysis = []  # List of dicts with debug info for each gate pair
+        
+        # === DEBUG: Store all detour waypoints that were actually added ===
+        self._debug_detour_waypoints_added = []  # List of (gate_index, waypoint_coords) tuples
+        
+        print("\n=== Detour Waypoint Analysis (Simplified: Right-side only) ===")
+        
+        # Check each pair of consecutive gates
+        for i in range(num_gates - 1):
+            # === DEBUG: Create debug dict for this gate pair ===
+            debug_info = {
+                'gate_i': i,
+                'gate_i_plus_1': i + 1,
+            }
+            
+            # Calculate indices accounting for previously inserted waypoints
+            last_idx_gate_i = 1 + (i + 1) * num_intermediate_points - 1 + inserted_count
+            first_idx_gate_i_plus_1 = 1 + (i + 1) * num_intermediate_points + inserted_count
+            
+            # === DEBUG: Store indices ===
+            debug_info['last_idx_gate_i'] = last_idx_gate_i
+            debug_info['first_idx_gate_i_plus_1'] = first_idx_gate_i_plus_1
+            
+            # Get the two waypoints
+            p1 = waypoints_list[last_idx_gate_i]          # Last point of gate i (+0.5m along normal)
+            p2 = waypoints_list[first_idx_gate_i_plus_1]  # First point of gate i+1 (-0.5m along normal)
+            
+            # === DEBUG: Store waypoints ===
+            debug_info['p1_last_of_gate_i'] = p1.copy()
+            debug_info['p2_first_of_gate_i_plus_1'] = p2.copy()
+            
+            # Calculate vector from p1 to p2
+            v = p2 - p1
+            v_norm = np.linalg.norm(v)
+            
+            # === DEBUG: Store vector ===
+            debug_info['vector_p1_to_p2'] = v.copy()
+            debug_info['vector_norm'] = v_norm
+            
+            if v_norm < 1e-6:
+                print(f"\nGate {i} -> Gate {i+1}: Vector too short, skipping")
+                debug_info['skipped'] = True
+                debug_info['skip_reason'] = 'vector_too_short'
+                self._debug_detour_analysis.append(debug_info)
+                continue
+            
+            # Calculate angle between this vector and gate i's normal
+            normal_i = gate_normals[i]
+            cos_angle = np.dot(v, normal_i) / v_norm
+            cos_angle = np.clip(cos_angle, -1.0, 1.0)  # Numerical stability
+            angle_deg = np.arccos(cos_angle) * 180 / np.pi
+            
+            # === DEBUG: Store angle calculation ===
+            debug_info['gate_i_normal'] = normal_i.copy()
+            debug_info['cos_angle'] = cos_angle
+            debug_info['angle_degrees'] = angle_deg
+            debug_info['angle_threshold'] = angle_threshold
+            
+            print(f"\nGate {i} -> Gate {i+1}:")
+            print(f"  Vector length: {v_norm:.3f}m")
+            print(f"  Angle with gate {i} normal: {angle_deg:.1f}°")
+            
+            # Check if backtracking is detected (angle > threshold means going backwards)
+            if angle_deg > angle_threshold:
+                print(f"  ⚠️  BACKTRACKING detected! Determining detour direction...")
+                
+                # === DEBUG: Mark as needing detour ===
+                debug_info['needs_detour'] = True
+                
+                gate_center = gate_positions[i]
+                y_axis = gate_y_axes[i]
+                z_axis = gate_z_axes[i]
+                
+                # === DEBUG: Store gate coordinate frame ===
+                debug_info['gate_i_center'] = gate_center.copy()
+                debug_info['gate_i_y_axis'] = y_axis.copy()
+                debug_info['gate_i_z_axis'] = z_axis.copy()
+                debug_info['detour_distance'] = detour_distance
+                                
+                # Step 1: Project vector v onto gate plane (remove normal component)
+                v_proj = v - np.dot(v, normal_i) * normal_i
+                v_proj_norm = np.linalg.norm(v_proj)
+                
+                # === DEBUG: Store projection ===
+                debug_info['v_projection_on_gate_plane'] = v_proj.copy()
+                debug_info['v_projection_norm'] = v_proj_norm
+                
+                if v_proj_norm < 1e-6:
+                    # Projection is too small, default to right side
+                    print(f"  Warning: Projection too small, defaulting to RIGHT side")
+                    detour_direction_vector = y_axis
+                    detour_direction_name = 'right (+y_axis) [default]'
+                    proj_angle_deg = 0.0
+                else:
+                    # Step 2: Calculate components in local coordinate system
+                    v_proj_y = np.dot(v_proj, y_axis)  # Left-right component
+                    v_proj_z = np.dot(v_proj, z_axis)  # Up-down component
+                    
+                    # === DEBUG: Store local components ===
+                    debug_info['v_proj_y_component'] = v_proj_y
+                    debug_info['v_proj_z_component'] = v_proj_z
+                    
+                    # Step 3: Calculate angle in gate plane
+                    # angle = 0° means +y direction (right)
+                    # angle = 90° means +z direction (up)
+                    # angle = ±180° means -y direction (left)
+                    proj_angle_deg = np.arctan2(v_proj_z, v_proj_y) * 180 / np.pi
+                    
+                    # === DEBUG: Store angle ===
+                    debug_info['projection_angle_degrees'] = proj_angle_deg
+                    
+                    # Step 4: Determine detour direction based on angle
+                    if -90 <= proj_angle_deg < 45:
+                        # Right side
+                        detour_direction_vector = y_axis
+                        detour_direction_name = 'right (+y_axis)'
+                    elif 45 <= proj_angle_deg < 135:
+                        # Top side
+                        detour_direction_vector = z_axis
+                        detour_direction_name = 'top (+z_axis)'
+                    else:  # angle >= 135 or angle < -90
+                        # Left side
+                        detour_direction_vector = -y_axis
+                        detour_direction_name = 'left (-y_axis)'
+                    
+                    print(f"  Projection angle: {proj_angle_deg:.1f}° → Detour direction: {detour_direction_name}")
+                
+                # === DEBUG: Store direction choice ===
+                debug_info['detour_direction_vector'] = detour_direction_vector.copy()
+                debug_info['detour_direction_name'] = detour_direction_name
+                debug_info['projection_angle_degrees'] = proj_angle_deg
+                
+                # Step 5: Calculate detour waypoint
+                detour_waypoint = gate_center + detour_distance * detour_direction_vector
+                
+                # === DEBUG: Store detour waypoint ===
+                debug_info['detour_waypoint'] = detour_waypoint.copy()
+                debug_info['detour_direction'] = detour_direction_name
+                
+                # Step 6: Insert the detour waypoint into the waypoints list  
+                insert_position = last_idx_gate_i + 1
+                waypoints_list.insert(insert_position, detour_waypoint)
+                inserted_count += 1
+    
+                # === DEBUG: Store insertion info ===
+                debug_info['insert_position'] = insert_position
+                debug_info['inserted'] = True
+                
+                print(f"  Inserted detour waypoint at index {insert_position}")
+                print(f"  Detour coords: [{detour_waypoint[0]:.3f}, {detour_waypoint[1]:.3f}, {detour_waypoint[2]:.3f}]")
+            else:
+                print(f"  ✓ No backtracking detected, proceeding normally")
+                debug_info['needs_detour'] = False
+                debug_info['inserted'] = False
+            
+            # === DEBUG: Store current inserted count ===
+            debug_info['total_inserted_so_far'] = inserted_count
+            
+            # Add this gate pair's debug info to the list
+            self._debug_detour_analysis.append(debug_info)
+        
+        # === DEBUG: Store final summary ===
+        self._debug_detour_summary = {
+            'total_detours_added': inserted_count,
+            'original_waypoint_count': len(waypoints),
+            'final_waypoint_count': len(waypoints_list),
+            'num_gate_pairs_checked': num_gates - 1,
+            'detour_waypoints': self._debug_detour_waypoints_added  # Also include in summary
+        }
+        
+        print(f"\n=== Total detour waypoints added: {inserted_count} ===")
+        
+        # === DEBUG: Print all added detour waypoints for easy viewing ===
+        if self._debug_detour_waypoints_added:
+            print("\n=== Added Detour Waypoints ===")
+            for idx, detour_info in enumerate(self._debug_detour_waypoints_added):
+                coords = detour_info['waypoint_coords']
+                gate_idx = detour_info['gate_index']
+                print(f"  Detour #{idx+1} (Gate {gate_idx}): "
+                    f"[{coords[0]:.3f}, {coords[1]:.3f}, {coords[2]:.3f}] - {detour_info['direction']}")
+        print()
+        
+        return np.array(waypoints_list)
+    
     def compute_control(
         self,
         obs: dict[str, NDArray[np.floating]],
