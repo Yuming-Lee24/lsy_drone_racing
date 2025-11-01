@@ -15,6 +15,7 @@ Key features:
 - Collision avoidance with obstacles
 - Dynamic replanning on environment changes
 - Real-time 3D visualization
+- Adding detour waypoints for backtracking gates
 
 Original repository:
 https://github.com/yufei4hua/lsy_drone_racing
