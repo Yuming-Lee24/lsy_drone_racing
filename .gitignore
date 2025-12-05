@@ -12,6 +12,7 @@ saves
 plots/
 c_generated_code/
 /build
+**/rl_training/wandb/
 
 # pixi environments
 .pixi/*
