@@ -1,0 +1,24 @@
+Training on device: cuda | Environment device: gpu
+Config: level3_stage1.toml
+[make_env] 配置: level3_stage1.toml, 门数: 4, 障碍物数: 4
+/data/repos/lsy_drone_racing/.pixi/envs/default/lib/python3.13/site-packages/jax/_src/abstract_arrays.py:135: RuntimeWarning: overflow encountered in cast
+  return literals.TypedNdArray(np.asarray(x, dtype), weak_type=False)
+Observation dim: 58, Action dim: 4
+/data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/wrappers/reward.py:224: RuntimeWarning: invalid value encountered in divide
+  vel_dir = np.where(vel_norm > min_vel, vel / vel_norm, 0.0)  # (num_envs, 3)
+Iter 1/122 | Steps: 16,384 | Episodes: 0 | Avg Reward (last 100): 0.00 | Time: 3.18s
+Iter 10/122 | Steps: 163,840 | Episodes: 1024 | Avg Reward (last 100): -94.31 | Time: 1.96s
+Iter 20/122 | Steps: 327,680 | Episodes: 3072 | Avg Reward (last 100): -63.57 | Time: 2.18s
+Iter 30/122 | Steps: 491,520 | Episodes: 4096 | Avg Reward (last 100): -43.68 | Time: 1.99s
+Iter 40/122 | Steps: 655,360 | Episodes: 6144 | Avg Reward (last 100): -12.86 | Time: 2.01s
+Iter 50/122 | Steps: 819,200 | Episodes: 7168 | Avg Reward (last 100): -7.73 | Time: 1.92s
+Iter 60/122 | Steps: 983,040 | Episodes: 9216 | Avg Reward (last 100): -4.19 | Time: 1.98s
+Iter 70/122 | Steps: 1,146,880 | Episodes: 10240 | Avg Reward (last 100): -3.53 | Time: 1.98s
+Iter 80/122 | Steps: 1,310,720 | Episodes: 12288 | Avg Reward (last 100): -2.85 | Time: 1.91s
+Iter 90/122 | Steps: 1,474,560 | Episodes: 13312 | Avg Reward (last 100): -2.68 | Time: 1.95s
+Iter 100/122 | Steps: 1,638,400 | Episodes: 15360 | Avg Reward (last 100): -2.45 | Time: 1.91s
+Iter 110/122 | Steps: 1,802,240 | Episodes: 17408 | Avg Reward (last 100): -2.36 | Time: 2.13s
+Iter 120/122 | Steps: 1,966,080 | Episodes: 18432 | Avg Reward (last 100): -2.33 | Time: 1.90s
+
+Training completed in 255.26s (1,998,848 steps)
+Model saved to /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/ppo_racing.ckpt

@@ -1,0 +1,18 @@
+Training on device: cuda | Environment device: gpu
+Config: level3_stage1.toml
+[make_env] 配置: level3_stage1.toml, 门数: 4, 障碍物数: 4
+/data/repos/lsy_drone_racing/.pixi/envs/default/lib/python3.13/site-packages/jax/_src/abstract_arrays.py:135: RuntimeWarning: overflow encountered in cast
+  return literals.TypedNdArray(np.asarray(x, dtype), weak_type=False)
+Observation dim: 58, Action dim: 4
+/data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/wrappers/reward.py:224: RuntimeWarning: invalid value encountered in divide
+  vel_dir = np.where(vel_norm > min_vel, vel / vel_norm, 0.0)  # (num_envs, 3)
+Iter 1/61 | Steps: 32,768 | Episodes: 0 | Avg Reward (last 100): 0.00 | Time: 3.62s
+Iter 10/61 | Steps: 327,680 | Episodes: 3065 | Avg Reward (last 100): -72.78 | Time: 3.98s
+Iter 20/61 | Steps: 655,360 | Episodes: 6126 | Avg Reward (last 100): -63.86 | Time: 3.04s
+Iter 30/61 | Steps: 983,040 | Episodes: 9187 | Avg Reward (last 100): -52.37 | Time: 4.37s
+Iter 40/61 | Steps: 1,310,720 | Episodes: 12230 | Avg Reward (last 100): -49.30 | Time: 2.51s
+Iter 50/61 | Steps: 1,638,400 | Episodes: 15286 | Avg Reward (last 100): -47.64 | Time: 3.48s
+Iter 60/61 | Steps: 1,966,080 | Episodes: 18317 | Avg Reward (last 100): -43.76 | Time: 2.73s
+
+Training completed in 182.05s (1,998,848 steps)
+Model saved to /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/ppo_racing.ckpt

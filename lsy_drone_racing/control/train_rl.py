@@ -801,7 +801,7 @@ def evaluate_ppo(args: Args, n_eval: int, model_path: Path) -> tuple[float, floa
 
 
 # region Main
-def main(wandb_enabled: bool = True, train: bool = True, eval: int = 1):
+def main(wandb_enabled: bool = False, train: bool = True, eval: int = 1):
     """Main."""
     args = Args.create()
     model_path = Path(__file__).parent / "ppo_drone_racing.ckpt"

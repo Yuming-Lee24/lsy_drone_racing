@@ -22,7 +22,7 @@ classifiers = [
 ########################
 # Pip Dependencies
 ########################
-dependencies = ["fire >= 0.6.0", "numpy", "toml >= 0.10.2"]
+dependencies = ["fire >= 0.6.0", "numpy", "toml >= 0.10.2", "torch>=2.8.0,<3", "jax[cuda12]>=0.7.1,<0.9"]
 
 [project.optional-dependencies]
 # option[sim]: basic simulation
@@ -179,3 +179,4 @@ pip = ">=25.0.1,<26"
 cmake = "*"
 compilers = ">=1.9.0, <1.11.0"
 make = "*"
+wandb = ">=0.22.3,<0.23"

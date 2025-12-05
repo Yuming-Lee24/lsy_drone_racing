@@ -1,0 +1,3 @@
+Training on device: cuda | Environment device: gpu
+Config: level3_stage1.toml
+[make_env] 配置: level3_stage1.toml, 门数: 4, 障碍物数: 4

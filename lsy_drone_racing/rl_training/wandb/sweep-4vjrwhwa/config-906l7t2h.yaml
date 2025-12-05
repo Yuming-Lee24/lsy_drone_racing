@@ -1,0 +1,30 @@
+wandb_version: 1
+
+clip_coef:
+  value: 0.23213364305833875
+coef_align:
+  value: 0.8231296352352363
+coef_collision:
+  value: 10
+coef_gate:
+  value: 5
+coef_progress:
+  value: 1.5879021174324903
+coef_smooth:
+  value: 0.3174372198112411
+coef_spin:
+  value: 0.010401758748865876
+ent_coef:
+  value: 0.002644474108300013
+gae_lambda:
+  value: 0.97
+gamma:
+  value: 0.95
+hidden_dim:
+  value: 128
+learning_rate:
+  value: 0.0015201708007612938
+num_steps:
+  value: 16
+vf_coef:
+  value: 0.3142715066885441

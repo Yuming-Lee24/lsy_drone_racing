@@ -139,18 +139,16 @@ class MyController(Controller):
         # === DEBUG: Save waypoints after detour ===
         self._debug_waypoints_after_detour = waypoints.copy()
         
-        # Apply collision avoidance
-        time_params, waypoints = self._avoid_collisions(
+        # Apply collision avoidance and generate final trajectory
+        self.trajectory = self._avoid_collisions(
             waypoints, 
             self.obstacle_positions,
             self.OBSTACLE_SAFETY_DISTANCE
         )
 
-        # === DEBUG: Save final waypoints ===
-        self._debug_waypoints_final = waypoints.copy()
-        
-        # Generate smooth trajectory
-        self.trajectory = self._generate_trajectory(self.TRAJECTORY_DURATION, waypoints)
+        # === DEBUG: Save final waypoints (sample from trajectory)
+        time_samples = np.linspace(0, self.TRAJECTORY_DURATION, len(waypoints))
+        self._debug_waypoints_final = self.trajectory(time_samples)
         
         # Initialize visualization
         self.fig = None
@@ -161,14 +159,10 @@ class MyController(Controller):
                 self.gate_normals,
                 obstacle_positions=self.obstacle_positions,
                 trajectory=self.trajectory,
-                waypoints=waypoints,
+                waypoints=self._debug_waypoints_after_detour,  # Show waypoints before collision avoidance
                 drone_position=obs['pos']
             )
-                # 在 __init__ 中添加调试代码
-        print("=== Available info keys ===")
-        print(info.keys())
-        print("\n=== Available obs keysduide ===")
-        print(obs.keys())
+ 
 
 
     def _extract_gate_normals(self, gates_quaternions: NDArray[np.floating]) -> NDArray[np.floating]:
@@ -257,7 +251,7 @@ class MyController(Controller):
         waypoints: NDArray[np.floating],
         obstacle_positions: NDArray[np.floating],
         safety_distance: float
-    ) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    ) -> CubicSpline:
         """Modify trajectory to avoid collisions with obstacles.
         
         Detects trajectory segments that pass too close to obstacles and inserts
@@ -269,7 +263,7 @@ class MyController(Controller):
             safety_distance: Minimum safe distance from obstacles.
             
         Returns:
-            Tuple of (time_parameters, modified_waypoints).
+            CubicSpline trajectory with collision avoidance applied.
         """
         # Generate initial trajectory
         trajectory = self._generate_trajectory(self.TRAJECTORY_DURATION, waypoints)
@@ -329,7 +323,8 @@ class MyController(Controller):
             time_samples = np.array(collision_free_times)
             trajectory_points = np.array(collision_free_waypoints)
         
-        return time_samples, trajectory_points
+        # Generate final trajectory from collision-free points
+        return CubicSpline(time_samples, trajectory_points)
 
     def _visualize_trajectory(
         self,
@@ -469,15 +464,12 @@ class MyController(Controller):
             detour_distance=0.65
         )
         
-        # Step 3: Apply collision avoidance
-        _, waypoints = self._avoid_collisions(
+        # Step 3: Apply collision avoidance and generate new trajectory
+        self.trajectory = self._avoid_collisions(
             waypoints,
             obs['obstacles_pos'],
             self.OBSTACLE_SAFETY_DISTANCE
         )
-        
-        # Step 4: Generate new trajectory
-        self.trajectory = self._generate_trajectory(self.TRAJECTORY_DURATION, waypoints)
 
     def _extract_gate_coordinate_frames(
         self, 
@@ -598,11 +590,11 @@ class MyController(Controller):
             
             print(f"\nGate {i} -> Gate {i+1}:")
             print(f"  Vector length: {v_norm:.3f}m")
-            print(f"  Angle with gate {i} normal: {angle_deg:.1f}°")
+            print(f"  Angle with gate {i} normal: {angle_deg:.1f}Â°")
             
             # Check if backtracking is detected (angle > threshold means going backwards)
             if angle_deg > angle_threshold:
-                print(f"  ⚠️  BACKTRACKING detected! Determining detour direction...")
+                print(f"  âš ï¸  BACKTRACKING detected! Determining detour direction...")
                 
                 # === DEBUG: Mark as needing detour ===
                 debug_info['needs_detour'] = True
@@ -641,9 +633,9 @@ class MyController(Controller):
                     debug_info['v_proj_z_component'] = v_proj_z
                     
                     # Step 3: Calculate angle in gate plane
-                    # angle = 0° means +y direction (right)
-                    # angle = 90° means +z direction (up)
-                    # angle = ±180° means -y direction (left)
+                    # angle = 0Â° means +y direction (right)
+                    # angle = 90Â° means +z direction (up)
+                    # angle = Â±180Â° means -y direction (left)
                     proj_angle_deg = np.arctan2(v_proj_z, v_proj_y) * 180 / np.pi
                     
                     # === DEBUG: Store angle ===
@@ -663,7 +655,7 @@ class MyController(Controller):
                         detour_direction_vector = -y_axis
                         detour_direction_name = 'left (-y_axis)'
                     
-                    print(f"  Projection angle: {proj_angle_deg:.1f}° → Detour direction: {detour_direction_name}")
+                    print(f"  Projection angle: {proj_angle_deg:.1f}Â° â†’ Detour direction: {detour_direction_name}")
                 
                 # === DEBUG: Store direction choice ===
                 debug_info['detour_direction_vector'] = detour_direction_vector.copy()
@@ -689,7 +681,7 @@ class MyController(Controller):
                 print(f"  Inserted detour waypoint at index {insert_position}")
                 print(f"  Detour coords: [{detour_waypoint[0]:.3f}, {detour_waypoint[1]:.3f}, {detour_waypoint[2]:.3f}]")
             else:
-                print(f"  ✓ No backtracking detected, proceeding normally")
+                print(f"  No backtracking detected, proceeding normally")
                 debug_info['needs_detour'] = False
                 debug_info['inserted'] = False
             
@@ -743,32 +735,13 @@ class MyController(Controller):
         # Sample target position from trajectory
         target_position = self.trajectory(current_time)
         
-        # Periodic logging
-        if self._time_step % self.LOG_INTERVAL == 0:
-            print(f"Time: {current_time:.2f}s | "
-                  f"Target: [{target_position[0]:.3f}, {target_position[1]:.3f}, {target_position[2]:.3f}]")
-        
         # Check for environment changes and replan if necessary
         if self._detect_environment_change(obs):
             self._replan_trajectory(obs, current_time)
-        if self.visualization:
-            self._visualize_trajectory(
-                self.gate_positions,
-                self.gate_normals,
-                obstacle_positions=obs['obstacles_pos'],
-                trajectory=self.trajectory,
-                drone_position=obs['pos']
-            )
+
         # Check if trajectory is complete
         if current_time >= self.TRAJECTORY_DURATION:
             self._is_finished = True
-        
-        # Draw trajectory in simulation environment (if available)
-        try:
-            draw_line(self.env, self.trajectory(self.trajectory.x), 
-                     rgba=np.array([1.0, 1.0, 1.0, 0.2]))
-        except (AttributeError, TypeError):
-            pass  # env not available or draw_line not supported
         
         # Return 13D state with only position filled
         return np.concatenate((target_position, np.zeros(10)), dtype=np.float32)

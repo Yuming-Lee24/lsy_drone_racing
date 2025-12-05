@@ -1,0 +1,125 @@
+_wandb:
+    value:
+        cli_version: 0.22.3
+        e:
+            1aaikrde1wjb147l4awc58g4zjsgp5j9:
+                args:
+                    - --wandb_enabled
+                    - "True"
+                    - --total_timesteps
+                    - "100000"
+                codePath: lsy_drone_racing/rl_training/ppo_racing.py
+                codePathLocal: ppo_racing.py
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "12.8"
+                disk:
+                    /:
+                        total: "60152573952"
+                        used: "24960196608"
+                email: yuming6924@gmail.com
+                executable: /data/repos/lsy_drone_racing/.pixi/envs/default/bin/python
+                git:
+                    commit: a36453b863befefeea3c9b053ced7d6e7ef8c401
+                    remote: https://github.com/Yuming-Lee24/lsy_drone_racing.git
+                gpu: NVIDIA GeForce RTX 2060 with Max-Q Design
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Turing
+                      cudaCores: 1920
+                      memoryTotal: "6442450944"
+                      name: NVIDIA GeForce RTX 2060 with Max-Q Design
+                      uuid: GPU-b6197253-454c-8b9c-2c57-390d166e5b05
+                host: ubuntu
+                memory:
+                    total: "16496250880"
+                os: Linux-6.8.0-87-generic-x86_64-with-glibc2.35
+                program: /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/ppo_racing.py
+                python: CPython 3.13.9
+                root: /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training
+                startedAt: "2025-12-04T19:01:45.873715Z"
+                writerId: 1aaikrde1wjb147l4awc58g4zjsgp5j9
+        m: []
+        python_version: 3.13.9
+        t:
+            "1":
+                - 1
+                - 12
+                - 45
+            "2":
+                - 1
+                - 12
+                - 45
+            "3":
+                - 16
+                - 61
+            "4": 3.13.9
+            "5": 0.22.3
+            "12": 0.22.3
+            "13": linux-x86_64
+anneal_lr:
+    value: true
+batch_size:
+    value: 32768
+clip_coef:
+    value: 0.2
+clip_vloss:
+    value: true
+coef_align:
+    value: 0.5
+coef_collision:
+    value: 5
+coef_gate:
+    value: 10
+coef_progress:
+    value: 1
+coef_smooth:
+    value: 0.1
+coef_spin:
+    value: 0.02
+config_file:
+    value: level3_stage1.toml
+cuda:
+    value: true
+ent_coef:
+    value: 0.01
+gae_lambda:
+    value: 0.95
+gamma:
+    value: 0.99
+hidden_dim:
+    value: 256
+jax_device:
+    value: gpu
+learning_rate:
+    value: 0.0003
+max_grad_norm:
+    value: 0.5
+minibatch_size:
+    value: 4096
+norm_adv:
+    value: true
+num_envs:
+    value: 1024
+num_iterations:
+    value: 3
+num_minibatches:
+    value: 8
+num_steps:
+    value: 32
+seed:
+    value: 42
+target_kl:
+    value: null
+torch_deterministic:
+    value: true
+total_timesteps:
+    value: 100000
+update_epochs:
+    value: 10
+vf_coef:
+    value: 0.5
+wandb_entity:
+    value: null
+wandb_project_name:
+    value: DroneRacing-PPO

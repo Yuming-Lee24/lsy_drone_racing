@@ -19,7 +19,7 @@ import jax.numpy as jp
 import numpy as np
 from gymnasium.wrappers.jax_to_numpy import JaxToNumpy
 
-from lsy_drone_racing.utils import load_config, load_controller
+from lsy_drone_racing.utils import load_config, load_controller, draw_line
 
 if TYPE_CHECKING:
     from ml_collections import ConfigDict
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def simulate(
-    config: str = "level2.toml",
+    config: str = "level3_stage1.toml",
     controller: str | None = None,
     n_runs: int = 1,
     render: bool | None = None,
@@ -100,6 +100,7 @@ def simulate(
                 break
             if config.sim.render:  # Render the sim if selected.
                 if ((i * fps) % config.env.freq) < fps:
+                    # draw_line(env,controller.get_trajectory_waypoints())
                     env.render()
             i += 1
 
