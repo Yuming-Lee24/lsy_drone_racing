@@ -50,6 +50,8 @@ class RacingRewardWrapper(VectorWrapper):
         coef_collision: float = 5.0,
         coef_smooth: float = 0.1,
         coef_spin: float = 0.02,
+        coef_angle: float = 0.06,  # 新增
+
     ):
         """初始化 Wrapper。
         
@@ -72,6 +74,7 @@ class RacingRewardWrapper(VectorWrapper):
             "collision": coef_collision,
             "smooth": coef_smooth,
             "spin": coef_spin,
+            "angle": coef_angle,  # 新增
         }
         
         # 当前使用的系数
@@ -102,7 +105,8 @@ class RacingRewardWrapper(VectorWrapper):
         """执行一步，计算 shaped reward。"""
         # 保存当前 action (用于下一步计算 smooth)
         action_array = np.array(action, dtype=np.float32).reshape(self.num_envs, -1)
-        
+        action = action.at[..., 2].set(0.0)  # 强制 yaw 为 0
+
         # 执行环境 step
         obs, original_reward, terminated, truncated, info = self.env.step(action)
         
@@ -134,14 +138,21 @@ class RacingRewardWrapper(VectorWrapper):
         
         # ========== 1. R_progress: 距离差奖励 ==========
         curr_dist = self._compute_dist_to_gate(obs)
-        r_progress = self._last_dist_to_gate - curr_dist  # 靠近为正
+        r_progress = np.exp(-2.0 * curr_dist)
         
         # 处理过门时的距离跳变：过门后 target 变了，这一步 progress 设为 0
         gate_changed = (target_gate != self._last_target_gate)
         r_progress = np.where(gate_changed, 0.0, r_progress)
         
         # 处理完赛情况：target_gate == -1 时不计算
+        pos = np.array(obs["pos"])
+        z = pos[:, 2]  # 高度
+
+        # 1. 起飞奖励：强烈鼓励离开地面
+        r_altitude = 1.0 * np.clip(z / 0.5, 0, 1.0)  # z=0→0, z=0.5m→1.0
         finished = (target_gate == -1)
+        airborne = z > 0.15  # 离地 15cm 以上
+        r_progress = np.where(airborne, np.exp(-2.0 * curr_dist), 0.0)
         r_progress = np.where(finished, 0.0, r_progress)
         
         r_progress = self.coefs["progress"] * r_progress
@@ -167,10 +178,20 @@ class RacingRewardWrapper(VectorWrapper):
         # ========== 6. P_spin: 角速度惩罚 ==========
         ang_vel = np.array(obs["ang_vel"])
         p_spin = self.coefs["spin"] * np.sum(ang_vel ** 2, axis=1)
-        
+
+        # ========== 7. P_angle: 姿态惩罚 ==========
+        quat = np.array(obs["quat"])  # (num_envs, 4)
+        rpy = Rotation.from_quat(quat).as_euler("xyz")  # (num_envs, 3)
+        rpy_norm = np.linalg.norm(rpy, axis=-1)  # (num_envs,)
+        p_angle = self.coefs["angle"] * rpy_norm
+
+        # ========== 8. R_altitude: 高度奖励 ==========
+
+
         # ========== 汇总 ==========
-        reward = r_progress + r_gate + r_align - p_collision - p_smooth - p_spin
-        
+        # reward = r_progress + r_gate + r_align - p_collision - p_smooth - p_spin
+        reward = r_progress + r_gate + r_align + r_altitude- p_smooth - p_angle - p_collision
+
         return reward.astype(np.float32)
     
     def _compute_dist_to_gate(self, obs: dict) -> NDArray:

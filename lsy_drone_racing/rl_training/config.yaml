@@ -2,25 +2,19 @@ _wandb:
     value:
         cli_version: 0.22.3
         e:
-            mzbx28pa86nvhx9cwtkwhxvl7m7w76ar:
+            hqrtw6577b2oa5fu6gk40fnje4ckjk8o:
                 args:
                     - --wandb_enabled=True
                     - --train=True
                     - --eval=0
-                    - --clip_coef=0.23213364305833875
-                    - --coef_align=0.8231296352352363
-                    - --coef_collision=10
-                    - --coef_gate=5
-                    - --coef_progress=1.5879021174324903
-                    - --coef_smooth=0.3174372198112411
-                    - --coef_spin=0.010401758748865876
-                    - --ent_coef=0.002644474108300013
-                    - --gae_lambda=0.97
+                    - --clip_coef=0.10520791309351314
+                    - --ent_coef=0.003380637483662815
+                    - --gae_lambda=0.9
                     - --gamma=0.95
-                    - --hidden_dim=128
-                    - --learning_rate=0.0015201708007612938
+                    - --hidden_dim=512
+                    - --learning_rate=0.002303345861277985
                     - --num_steps=16
-                    - --vf_coef=0.3142715066885441
+                    - --vf_coef=0.6426868016302685
                 codePath: lsy_drone_racing/rl_training/ppo_racing.py
                 codePathLocal: ppo_racing.py
                 cpu_count: 8
@@ -29,11 +23,11 @@ _wandb:
                 disk:
                     /:
                         total: "60152573952"
-                        used: "24964268032"
+                        used: "25022210048"
                 email: yuming6924@gmail.com
                 executable: /data/repos/lsy_drone_racing/.pixi/envs/default/bin/python
                 git:
-                    commit: a36453b863befefeea3c9b053ced7d6e7ef8c401
+                    commit: 03880b35457cd54b777d78a3d328a83879d1023d
                     remote: https://github.com/Yuming-Lee24/lsy_drone_racing.git
                 gpu: NVIDIA GeForce RTX 2060 with Max-Q Design
                 gpu_count: 1
@@ -45,13 +39,13 @@ _wandb:
                       uuid: GPU-b6197253-454c-8b9c-2c57-390d166e5b05
                 host: ubuntu
                 memory:
-                    total: "16496250880"
+                    total: "16496238592"
                 os: Linux-6.8.0-87-generic-x86_64-with-glibc2.35
                 program: /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/ppo_racing.py
                 python: CPython 3.13.9
                 root: /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training
-                startedAt: "2025-12-04T19:46:28.027554Z"
-                writerId: mzbx28pa86nvhx9cwtkwhxvl7m7w76ar
+                startedAt: "2025-12-06T05:01:31.842222Z"
+                writerId: hqrtw6577b2oa5fu6gk40fnje4ckjk8o
         m: []
         python_version: 3.13.9
         t:
@@ -76,37 +70,39 @@ anneal_lr:
 batch_size:
     value: 16384
 clip_coef:
-    value: 0.23213364305833875
+    value: 0.10520791309351314
 clip_vloss:
     value: true
 coef_align:
-    value: 0.8231296352352363
+    value: 0.5
+coef_angle:
+    value: 0.06
 coef_collision:
-    value: 10
-coef_gate:
     value: 5
+coef_gate:
+    value: 10
 coef_progress:
-    value: 1.5879021174324903
+    value: 1
 coef_smooth:
-    value: 0.3174372198112411
+    value: 0.1
 coef_spin:
-    value: 0.010401758748865876
+    value: 0.02
 config_file:
-    value: level3_stage1.toml
+    value: level0_no_obst.toml
 cuda:
     value: true
 ent_coef:
-    value: 0.002644474108300013
+    value: 0.003380637483662815
 gae_lambda:
-    value: 0.97
+    value: 0.9
 gamma:
     value: 0.95
 hidden_dim:
-    value: 128
+    value: 512
 jax_device:
     value: gpu
 learning_rate:
-    value: 0.0015201708007612938
+    value: 0.002303345861277985
 max_grad_norm:
     value: 0.5
 minibatch_size:
@@ -132,7 +128,7 @@ total_timesteps:
 update_epochs:
     value: 10
 vf_coef:
-    value: 0.3142715066885441
+    value: 0.6426868016302685
 wandb_entity:
     value: null
 wandb_project_name:

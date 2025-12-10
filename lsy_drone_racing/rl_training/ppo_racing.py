@@ -121,7 +121,7 @@ class Args:
     """隐藏层维度"""
     
     # ---------- 奖励系数 (可通过 WandB Sweep 调整) ----------
-    coef_progress: float = 1.0
+    coef_progress: float = 10.0
     """距离进度奖励系数"""
     coef_gate: float = 10.0
     """过门奖励"""
@@ -129,10 +129,17 @@ class Args:
     """速度对齐奖励系数"""
     coef_collision: float = 5.0
     """碰撞惩罚系数"""
-    coef_smooth: float = 0.1
+    coef_smooth: float = 0.0
     """动作平滑惩罚系数"""
     coef_spin: float = 0.02
     """角速度惩罚系数"""
+    coef_angle: float = 0.00
+    """姿态惩罚系数"""
+    coef_time: float = 0.05
+    """时间惩罚系数"""
+    
+    n_history: int = 2
+    """状态堆叠数量"""
     
     # ---------- 运行时计算 ----------
     batch_size: int = 0
@@ -237,6 +244,7 @@ def make_env(
         coef_collision=args.coef_collision,
         coef_smooth=args.coef_smooth,
         coef_spin=args.coef_spin,
+        coef_time=args.coef_time
     )
     
     # 3. 包装观测 (将字典转为 58D 向量)
@@ -244,7 +252,8 @@ def make_env(
         env,
         n_gates=n_gates,
         n_obstacles=n_obstacles,
-        stage=2,  # Stage 1: 屏蔽障碍物
+        stage=1,  # Stage 1: 屏蔽障碍物
+        n_history=args.n_history,  # 新增 状态堆叠数量
     )
     
     # 4. 数据类型转换: JAX Array → PyTorch Tensor
@@ -697,7 +706,7 @@ def main(
     wandb_enabled: bool = False,
     train: bool = True,
     eval: int = 0,
-    config_file: str = "level2.toml",
+    config_file: str = "level0_no_obst.toml",
     load_config_from: str = None,
     **kwargs,
 ):

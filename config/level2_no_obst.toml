@@ -1,8 +1,8 @@
-# Level 3
+# Level 2
 
-# | Evaluation Scenario | Randomized Inertial Properties | Randomized Obstacles, Gates | Randomized Tracks | Notes           |
-# | :-----------------: | :----------------------------: | :-------------------------: | :---------------: | :-------------: |
-# | `level3.toml`       | *Yes*                          | *Yes*                       | *Yes*             | Online planning |
+# | Evaluation Scenario | Randomized Inertial Properties | Randomized Obstacles, Gates | Randomized Tracks | Notes                 |
+# | :-----------------: | :----------------------------: | :-------------------------: | :---------------: | :-------------------: |
+# | `level2.toml`       | *Yes*                          | *Yes*                       | *No*              | Learning, re-planning |
 [controller]
 file = "my_state_controller.py" # Put your controller file name here. Specifying a controller as argument to scripts will override this setting. Controllers are located in `lsy_drone_racing/control/`
 
@@ -16,8 +16,8 @@ check_drone_start_pos = true
 real_track_objects = true
 
 [[deploy.drones]]
-id = 91
-channel = 100
+id = 52
+channel = 80
 drone_model = "cf21B_500"                        # Model of the drone, i.e., cf2x_L250, cf2x_P250, cf2x_T500, cf21B_500. For this course, we use cf21B_500
 
 
@@ -40,40 +40,37 @@ id = "DroneRacing-v0"   # "DroneRacing-v0" for single races, "MultiDroneRacing-v
 seed = "random"         # Either "random" for a random behavior or an integer for reproducibility
 freq = 50               # Frequency of the environment's step function, in Hz
 sensor_range = 0.7      # Range at which the exact location of gates and obstacles become visible to the drone. Objects that are not in the drone's sensor range report their nominal position.
-control_mode = "state"  # Control mode of the environment. Can be either "state" or "attitude"
+control_mode = "attitude"  # Control mode of the environment. Can be either "state" or "attitude"
 
 [env.track]
-# Full track radomization. When activated, the position (x & y) and orientation (yaw) 
-# of the below given gates, obstacles and drones is randomized inside the safety limits. 
-# Note: The order and therefore also height is not randomized!
-randomize = true
+randomize = false       # Randomized the positions (x & y) of the given gates, obstacles and drones 
 
 # Tall gates: 1.195m height. Short gates: 0.695m height. Height is measured from the ground to the center of the gate.
 [[env.track.gates]]
-pos = [0.0, 0.0, 0.7]
-rpy = [0.0, 0.0, 0.0]
+pos = [0.5 , 0.25, 0.7]
+rpy = [0.0, 0.0, -0.78]
 [[env.track.gates]]
-pos = [0.0, 0.0, 1.2]
-rpy = [0.0, 0.0, 0.0]
+pos = [1.05, 0.75, 1.2]
+rpy = [0.0, 0.0, 2.35]
 [[env.track.gates]]
-pos = [0.0, 0.0, 0.7]
-rpy = [0.0, 0.0, 0.0]
+pos = [-1.0, -0.25, 0.7]
+rpy = [0.0, 0.0, 3.14]
 [[env.track.gates]]
-pos = [0.0, 0.0, 1.2]
+pos = [0.0, -0.75, 1.2]
 rpy = [0.0, 0.0, 0.0]
 
 # Obstacle height: 1.52m + reflective marker on top. Height is measured from the ground to the top of the obstacle.
 [[env.track.obstacles]]
-pos = [0.0, 0.0, 1.55]
+pos = [0.0, 0.75, 1.55]
 [[env.track.obstacles]]
-pos = [0.0, 0.0, 1.55]
+pos = [1.0, 0.25, 1.55]
 [[env.track.obstacles]]
-pos = [0.0, 0.0, 1.55]
+pos = [-1.5, -0.25, 1.55]
 [[env.track.obstacles]]
-pos = [0.0, 0.0, 1.55]
+pos = [-0.5, -0.75, 1.55]
 
 [[env.track.drones]]
-pos = [0.0, 0.0, 0.0]
+pos = [-1.5, 0.75, 0.01]
 rpy = [0.0, 0.0, 0.0]
 vel = [0, 0, 0]
 ang_vel = [0, 0, 0]

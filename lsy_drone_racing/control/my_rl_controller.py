@@ -1,7 +1,7 @@
 """RL-based Racing Controller.
 
 使用 PPO 训练的策略进行无人机竞速控制。
-观测空间与训练时的 RacingObservationWrapper 一致 (58D)。
+观测空间与训练时的 RacingObservationWrapper 一致 (84D)。
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(torch.nn.Module):
     """PPO Agent 网络."""
     
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 128):
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 512):
         super().__init__()
         
         self.critic = torch.nn.Sequential(
@@ -89,25 +89,25 @@ class RLRacingController(Controller):
     
     # 门的局部坐标系下 4 个角点偏移
     GATE_CORNERS_LOCAL = np.array([
-        [0.0, -0.2,  0.2],  # 左上
-        [0.0,  0.2,  0.2],  # 右上
-        [0.0,  0.2, -0.2],  # 右下
-        [0.0, -0.2, -0.2],  # 左下
+        [0.0, -0.2,  0.2],
+        [0.0,  0.2,  0.2],
+        [0.0,  0.2, -0.2],
+        [0.0, -0.2, -0.2],
     ], dtype=np.float32)
     
+    # 历史状态维度
+    HISTORY_STATE_DIM = 13  # pos(3) + quat(4) + vel(3) + ang_vel(3)
+    
     def __init__(self, obs: dict[str, NDArray], info: dict, config: dict):
-        """初始化控制器.
-        
-        Args:
-            obs: 初始观测
-            info: 环境信息
-            config: 环境配置
-        """
+        """初始化控制器."""
         super().__init__(obs, info, config)
         
         self.freq = config.env.freq
         self.n_gates = len(config.env.track.gates)
         self.n_obstacles = len(config.env.track.get("obstacles", []))
+        
+        # 历史帧数 (与训练时一致)
+        self.n_history = 2
         
         # 动作范围 (attitude 模式)
         self.action_low = np.array([-1.0, -np.pi, -np.pi, -np.pi], dtype=np.float32)
@@ -118,14 +118,24 @@ class RLRacingController(Controller):
         self._tick = 0
         self._finished = False
         
+        # 历史状态缓冲区 (n_history, 13)
+        self._history_buffer = np.zeros(
+            (self.n_history, self.HISTORY_STATE_DIM), 
+            dtype=np.float32
+        )
+        # 用初始状态填充历史缓冲区
+        init_state = self._extract_basic_state(obs)
+        for i in range(self.n_history):
+            self._history_buffer[i] = init_state
+        
         # 加载 RL 策略
         self.device = torch.device("cpu")
-        self.obs_dim = 58
+        self.obs_dim = 58 + self.n_history * self.HISTORY_STATE_DIM  # 84
         self.action_dim = 4
         
-        self.agent = Agent(self.obs_dim, self.action_dim, hidden_dim=128).to(self.device)
+        self.agent = Agent(self.obs_dim, self.action_dim, hidden_dim=512).to(self.device)
         
-        # 模型路径 (与训练脚本输出一致)
+        # 模型路径
         model_path = Path(__file__).parent.parent / "rl_training" / "ppo_racing.ckpt"
         if model_path.exists():
             self.agent.load_state_dict(
@@ -137,27 +147,41 @@ class RLRacingController(Controller):
         
         self.agent.eval()
     
+    def _extract_basic_state(self, obs: dict) -> NDArray:
+        """提取基础状态 (pos, quat, vel, ang_vel)。
+        
+        Returns:
+            (13,) 基础状态向量
+        """
+        pos = np.array(obs["pos"]).flatten()[:3]
+        quat = np.array(obs["quat"]).flatten()[:4]
+        vel = np.array(obs["vel"]).flatten()[:3]
+        ang_vel = np.array(obs["ang_vel"]).flatten()[:3]
+        
+        return np.concatenate([pos, quat, vel, ang_vel]).astype(np.float32)
+    
+    def _update_history_buffer(self, obs: dict):
+        """更新历史状态缓冲区。"""
+        current_state = self._extract_basic_state(obs)
+        
+        # 滚动：丢弃最旧的，添加最新的
+        self._history_buffer = np.concatenate([
+            self._history_buffer[1:],
+            current_state[np.newaxis, :]
+        ], axis=0)
+    
     def compute_control(
         self, 
         obs: dict[str, NDArray], 
         info: dict | None = None
     ) -> NDArray:
-        """计算控制指令.
-        
-        Args:
-            obs: 当前观测
-            info: 额外信息
-            
-        Returns:
-            [thrust, roll, pitch, yaw] 控制指令
-        """
+        """计算控制指令."""
         # 检查是否完赛
         if obs["target_gate"] == -1:
             self._finished = True
-            # 返回悬停指令
             return np.array([0.5, 0.0, 0.0, 0.0], dtype=np.float32)
         
-        # 构建 58D 观测向量
+        # 构建 84D 观测向量
         obs_vector = self._build_observation(obs)
         
         # 转换为 tensor
@@ -168,57 +192,64 @@ class RLRacingController(Controller):
             action, _, _, _ = self.agent.get_action_and_value(obs_tensor, deterministic=True)
             action = action.squeeze(0).cpu().numpy()
         
-        # 缩放动作 [-1, 1] -> 实际范围
+        # 强制 yaw 为 0
+        action[2] = 0.0
+        
+        # 缩放动作
         action = self._scale_action(action)
         
         # 更新状态
         self.prev_action = action.copy()
+        self._update_history_buffer(obs)
         
         return action.astype(np.float32)
     
     def _build_observation(self, obs: dict[str, NDArray]) -> NDArray:
-        """构建 58D 观测向量 (与 RacingObservationWrapper 一致).
+        """构建 84D 观测向量。
         
         结构:
             [0:3]   - pos (世界坐标)
             [3:6]   - vel_body (机体坐标)
             [6:9]   - ang_vel
             [9:18]  - rot_matrix (展平)
-            [18:30] - gate1_corners (当前门, 机体坐标)
-            [30:42] - gate2_corners (下一门, 机体坐标)
+            [18:30] - gate1_corners
+            [30:42] - gate2_corners
             [42:46] - prev_action
-            [46:58] - obstacles (机体坐标)
+            [46:58] - obstacles
+            [58:84] - history (2 * 13 = 26)
         """
         # 基础状态
-        pos = obs["pos"]  # (3,)
-        vel = obs["vel"]  # (3,)
-        ang_vel = obs["ang_vel"]  # (3,)
-        quat = obs["quat"]  # (4,)
+        pos = obs["pos"]
+        vel = obs["vel"]
+        ang_vel = obs["ang_vel"]
+        quat = obs["quat"]
         
         # 旋转矩阵
         rot = Rotation.from_quat(quat)
-        rot_matrix = rot.as_matrix().flatten()  # (9,)
+        rot_matrix = rot.as_matrix().flatten()
         
         # 速度转到机体坐标系
-        vel_body = rot.inv().apply(vel)  # (3,)
+        vel_body = rot.inv().apply(vel)
         
-        # 门角点 (机体坐标)
+        # 门角点
         target_gate = int(obs["target_gate"])
-        gates_pos = obs["gates_pos"]  # (n_gates, 3)
-        gates_quat = obs["gates_quat"]  # (n_gates, 4)
+        gates_pos = obs["gates_pos"]
+        gates_quat = obs["gates_quat"]
         
         gate1_corners = self._compute_gate_corners_body(
             target_gate, gates_pos, gates_quat, pos, rot
-        )  # (12,)
-        
+        )
         gate2_corners = self._compute_gate_corners_body(
             target_gate + 1, gates_pos, gates_quat, pos, rot
-        )  # (12,)
+        )
         
-        # 障碍物 (机体坐标)
+        # 障碍物
         obstacles_body = self._compute_obstacles_body(
             obs.get("obstacles_pos", np.zeros((0, 3))), pos, rot
-        )  # (12,)
+        )
+        
+        # 历史状态 (展平)
+        history_flat = self._history_buffer.flatten()  # (26,)
         
         # 拼接
         obs_vector = np.concatenate([
@@ -230,7 +261,8 @@ class RLRacingController(Controller):
             gate2_corners,      # 12
             self.prev_action,   # 4
             obstacles_body,     # 12
-        ])  # Total: 58
+            history_flat,       # 26
+        ])  # Total: 84
         
         return obs_vector.astype(np.float32)
     
@@ -243,24 +275,18 @@ class RLRacingController(Controller):
         drone_rot: Rotation,
     ) -> NDArray:
         """计算门的 4 个角点在机体坐标系下的位置."""
-        # 边界检查
         if gate_idx < 0 or gate_idx >= len(gates_pos):
             return np.zeros(12, dtype=np.float32)
         
-        gate_pos = gates_pos[gate_idx]  # (3,)
-        gate_quat = gates_quat[gate_idx]  # (4,)
-        
-        # 门的旋转
+        gate_pos = gates_pos[gate_idx]
+        gate_quat = gates_quat[gate_idx]
         gate_rot = Rotation.from_quat(gate_quat)
         
-        # 角点世界坐标
-        corners_world = gate_pos + gate_rot.apply(self.GATE_CORNERS_LOCAL)  # (4, 3)
+        corners_world = gate_pos + gate_rot.apply(self.GATE_CORNERS_LOCAL)
+        rel_world = corners_world - drone_pos
+        corners_body = drone_rot.inv().apply(rel_world)
         
-        # 转到机体坐标系
-        rel_world = corners_world - drone_pos  # (4, 3)
-        corners_body = drone_rot.inv().apply(rel_world)  # (4, 3)
-        
-        return corners_body.flatten().astype(np.float32)  # (12,)
+        return corners_body.flatten().astype(np.float32)
     
     def _compute_obstacles_body(
         self,
@@ -269,20 +295,18 @@ class RLRacingController(Controller):
         drone_rot: Rotation,
     ) -> NDArray:
         """计算障碍物在机体坐标系下的位置."""
-        result = np.full(12, 10.0, dtype=np.float32)  # 默认很远
+        result = np.full(12, 10.0, dtype=np.float32)
         
         if obstacles_pos.size == 0:
             return result
         
-        # 相对位置
-        rel_world = obstacles_pos - drone_pos  # (n_obs, 3)
-        rel_body = drone_rot.inv().apply(rel_world)  # (n_obs, 3)
+        rel_world = obstacles_pos - drone_pos
+        rel_body = drone_rot.inv().apply(rel_world)
         
-        # 按距离排序，取最近 4 个
         dists = np.linalg.norm(rel_body, axis=1)
         sorted_idx = np.argsort(dists)[:4]
         
-        nearest = rel_body[sorted_idx]  # (<=4, 3)
+        nearest = rel_body[sorted_idx]
         result[:nearest.size] = nearest.flatten()
         
         return result
@@ -311,3 +335,7 @@ class RLRacingController(Controller):
         self._tick = 0
         self._finished = False
         self.prev_action = np.zeros(4, dtype=np.float32)
+        self._history_buffer = np.zeros(
+            (self.n_history, self.HISTORY_STATE_DIM), 
+            dtype=np.float32
+        )
