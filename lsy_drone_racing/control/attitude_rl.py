@@ -17,7 +17,6 @@ import numpy as np
 import torch
 from drone_models.core import load_params
 from scipy.interpolate import CubicSpline
-from drone_controllers.mellinger.params import ForceTorqueParams
 
 from lsy_drone_racing.control import Controller
 from lsy_drone_racing.control.train_rl import Agent
@@ -42,14 +41,10 @@ class AttitudeRL(Controller):
         self.freq = config.env.freq
 
         drone_params = load_params(config.sim.physics, config.sim.drone_model)
-        params = ForceTorqueParams.load(config.sim.drone_model)
-        thrust_min, thrust_max = params.thrust_min * 4, params.thrust_max * 4
         self.drone_mass = drone_params["mass"]  # alternatively from sim.drone_mass
         self.thrust_min = drone_params["thrust_min"] * 4  # min total thrust
         self.thrust_max = drone_params["thrust_max"] * 4  # max total thrust
-        print(f"[RLController] Drone Model: {config.sim.drone_model}")
-        print(f"[RLController] Max Thrust: {thrust_max:.2f} N")
-        print(f"[RLController] Min Thrust: {thrust_min:.2f} N")
+
         # Set num of stacked obs
         self.n_obs = 2
         # Set trajectory parameters
