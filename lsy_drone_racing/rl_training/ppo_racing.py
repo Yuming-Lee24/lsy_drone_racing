@@ -47,7 +47,8 @@ from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 
 # 自定义 Wrapper
 from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
-from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper
+from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper as BaseRewardWrapper
+from lsy_drone_racing.rl_training.wrappers.reward_racing_lv0 import RacingRewardWrapper as RacingRewardWrapperLv0
 
 
 # ============================================================================
@@ -77,66 +78,65 @@ class Args:
     wandb_entity: str = None
     """WandB 团队/用户名"""
     
-    # ---------- 环境配置 ----------
-    config_file: str = "level2.toml"
-    """环境配置文件 (相对于 config/ 目录)"""
-    num_envs: int = 1024
-    """并行环境数量"""
-    # 门和障碍物数量从配置文件自动读取，无需手动指定
+# ---------- 环境配置 ----------
+    config_file: str = "level0_no_obst.toml" # 确保是用无障碍的配置
     
-    # ---------- PPO 超参数 ----------
-    total_timesteps: int = 2_000_000
-    """总训练步数"""
+    # [关键修改 1] 并行环境数
+    # 稍微降低环境数，把内存留给更长的 num_steps
+    num_envs: int = 64  
+    
+    # ---------- PPO 超参数 (竞速调优版) ----------
+    
+    # [关键修改 2] 训练总量
+    # 竞速需要精细打磨轨迹，通常需要较多步数
+    total_timesteps: int = 5_000_000  
+    
+    # [关键修改 3] 学习率
+    # 3e-4 是黄金标准。开启退火(anneal_lr)非常重要，
+    # 可以在训练后期让无人机动作更细腻，不再抖动。
     learning_rate: float = 3e-4
-    """学习率"""
-    num_steps: int = 32
-    """每次 rollout 的步数"""
-    gamma: float = 0.99
-    """折扣因子"""
-    gae_lambda: float = 0.95
-    """GAE lambda"""
-    num_minibatches: int = 8
-    """minibatch 数量"""
-    update_epochs: int = 10
-    """每次更新的 epoch 数"""
-    clip_coef: float = 0.2
-    """PPO clip 系数"""
-    clip_vloss: bool = True
-    """是否 clip value loss"""
-    ent_coef: float = 0.01
-    """熵系数"""
-    vf_coef: float = 0.5
-    """value function 系数"""
-    max_grad_norm: float = 0.5
-    """梯度裁剪"""
-    target_kl: float = None
-    """目标 KL 散度 (可选的早停)"""
     anneal_lr: bool = True
-    """是否学习率退火"""
-    norm_adv: bool = True
-    """是否归一化 advantage"""
     
-    # ---------- 网络结构 ----------
+    # [关键修改 4] 视野长度 (Rollout Length)
+    # 原来的 32 太短了！改为 128 或 256。
+    # 128 steps @ 50Hz = 2.56秒。
+    # 这让 GAE (优势函数) 能更准确地评估当前动作对未来的影响。
+    num_steps: int = 128  
+    
+    # 批次计算
+    # Batch Size = 64 * 128 = 8192
+    # Minibatch Size = 8192 / 4 = 2048
+    num_minibatches: int = 4
+    update_epochs: int = 10
+    
+    # [关键修改 5] 熵系数 (Entropy Coef)
+    # 竞速任务（尤其是过拟合）需要确定性策略。
+    # 0.01 适合初期探索。如果你发现后期收敛不够快，可以改小到 0.001 或 0.0
+    ent_coef: float = 0.01  
+    
+    # 其他标准参数 (保持默认即可)
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_coef: float = 0.2
+    clip_vloss: bool = True
+    vf_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    target_kl: float = None
+    norm_adv: bool = True
+    
+    # 网络结构
     hidden_dim: int = 256
     """隐藏层维度"""
     
-    # ---------- 奖励系数 (可通过 WandB Sweep 调整) ----------
-    coef_progress: float = 10.0
-    """距离进度奖励系数"""
-    coef_gate: float = 10.0
-    """过门奖励"""
-    coef_align: float = 0.5
-    """速度对齐奖励系数"""
-    coef_collision: float = 5.0
-    """碰撞惩罚系数"""
-    coef_smooth: float = 0.0
-    """动作平滑惩罚系数"""
-    coef_spin: float = 0.02
-    """角速度惩罚系数"""
-    coef_angle: float = 0.00
-    """姿态惩罚系数"""
-    coef_time: float = 0.05
-    """时间惩罚系数"""
+# ---------- 奖励系数 (适配 RacingRewardWrapperLv0) ----------
+    coef_progress: float = 20.0   # [修改] 差分奖励需要较大的系数
+    coef_gate: float = 10.0       # [保持]
+    coef_finish: float = 50.0     # [新增] 完赛大奖
+    coef_time: float = 0.05       # [新增] 时间惩罚
+    coef_align: float = 0.5       # [保持]
+    coef_collision: float = 10.0  # [修改] 稍微加大碰撞惩罚
+    coef_smooth: float = 0.1      # [保持]
+    coef_spin: float = 0.1        # [修改] 稍微加大防震荡
     
     n_history: int = 2
     """状态堆叠数量"""
@@ -234,20 +234,24 @@ def make_env(
     env = NormalizeActions(env)
     
     # 2. 包装奖励 (需要原始 obs 字典)
-    env = RacingRewardWrapper(
+    env = RacingRewardWrapperLv0(  # 确保类名和你 import 的一致
         env,
-        n_gates=n_gates,
-        stage=1,  # Stage 1: 无障碍物
+        n_gates=n_gates,           # 显式传入 n_gates
+        # stage=1,                 # 竞速模式下 stage 通常不再通过参数控制逻辑，可以注释掉或留着占位
+        
+        # 传递所有系数
         coef_progress=args.coef_progress,
         coef_gate=args.coef_gate,
+        coef_finish=args.coef_finish,     # <--- 之前缺失的
+        coef_time=args.coef_time,         # <--- 之前缺失的 (虽然你snippet里有，但确保 args 里有定义)
         coef_align=args.coef_align,
         coef_collision=args.coef_collision,
         coef_smooth=args.coef_smooth,
         coef_spin=args.coef_spin,
-        coef_time=args.coef_time
     )
     
-    # 3. 包装观测 (将字典转为 58D 向量)
+
+    # 3. 包装观测 (将字典转为向量)
     env = RacingObservationWrapper(
         env,
         n_gates=n_gates,
@@ -303,14 +307,36 @@ class Agent(nn.Module):
             nn.Tanh(),  # 输出范围 [-1, 1]
         )
         
+        # ============================================================
+        # [关键修改] 推力偏置 (Thrust Bias) 初始化
+        # ============================================================
+        # 我们要修改 actor_mean 的最后一层 Linear 层的 bias
+        # 结构是: [Linear, Tanh, Linear, Tanh, Linear(索引-2), Tanh(索引-1)]
+        with torch.no_grad():
+            last_layer = self.actor_mean[-2] # 获取最后一个 Linear 层
+            
+            # 1. 确保姿态通道 (0,1,2) 偏置为 0 (水平)
+            # 这里的 0 对应 NormalizeActions 映射后的中间值
+            last_layer.bias[0] = 0.0  # Roll
+            last_layer.bias[1] = 0.0  # Pitch
+            last_layer.bias[2] = 0.0  # Yaw
+            
+            # 2. 给推力通道 (3) 加偏置
+            # 我们给 Bias=1.0。
+            # 网络输出经过 Tanh(1.0) ≈ 0.76 (范围 -1~1)。
+            # 经过 NormalizeActions 映射到环境的 [0, 1] 并不是简单的线性，要看 wrapper 实现。
+            # 通常 NormalizeActions 会把网络 [-1, 1] 映射到 [Low, High]。
+            # 如果 Low=0, High=1 (推力)，那么 0.76 对应 0.88 (88% 油门)。
+            # 如果 Low=-3.14, High=3.14 (根据你的打印)，那这有点奇怪，但物理引擎通常只取正值。
+            
+            # 不管怎样，给 Index 3 一个正的 Bias 是起飞的关键！
+            last_layer.bias[3] = 1.0
+
         # 动作标准差 (可学习参数)
         # 根据动作维度自适应初始化
         if action_dim == 4:
-            # attitude 模式: [thrust, roll, pitch, yaw]
-            init_logstd = torch.tensor([[-1.0, -1.0, -1.0, 0.0]])
-        else:
-            # state 模式或其他: 统一初始化
-            init_logstd = torch.zeros(1, action_dim)
+            # attitude 模式: [roll, pitch, yaw,thrust]
+            init_logstd = torch.tensor([[-1.0, -1.0, -1.0, -0.5]])
         self.actor_logstd = nn.Parameter(init_logstd)
     
     def get_value(self, x: Tensor) -> Tensor:
@@ -409,6 +435,12 @@ def train_ppo(
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+
+    # =================初始化保存变量 =================
+    best_reward = -float('inf')
+    best_model_path = model_path.parent / "best_model.ckpt"
+    print(f"训练开始。按 Ctrl+C 可安全停止并保存到: {model_path}")
+    # ===========================================================
     
     # ========== 开始训练 ==========
     global_step = 0
@@ -419,165 +451,204 @@ def train_ppo(
     # 统计
     sum_rewards = torch.zeros(args.num_envs).to(device)
     sum_rewards_hist = []
+    len_hist = []
     episode_count = 0
     
-    for iteration in range(1, args.num_iterations + 1):
-        iter_start_time = time.time()
-        
-        # 学习率退火
-        if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            optimizer.param_groups[0]["lr"] = frac * args.learning_rate
-        
-        # ========== 收集数据 ==========
-        for step in range(args.num_steps):
-            global_step += args.num_envs
-            obs[step] = next_obs
-            dones[step] = next_done
+    try:
+        for iteration in range(1, args.num_iterations + 1):
+            iter_start_time = time.time()
             
-            # 采样动作
-            with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
-                values[step] = value.flatten()
-            actions[step] = action
-            logprobs[step] = logprob
+            # 学习率退火
+            if args.anneal_lr:
+                frac = 1.0 - (iteration - 1.0) / args.num_iterations
+                optimizer.param_groups[0]["lr"] = frac * args.learning_rate
             
-            # 执行动作 (JaxToTorch wrapper 会处理 tensor 转换)
-            next_obs, reward, terminations, truncations, infos = envs.step(action)
-            next_obs = next_obs.to(device)
-            reward = reward.to(device)
-            
-            rewards[step] = reward
-            sum_rewards += reward
-            
-            # 处理 episode 结束
-            next_done = (terminations | truncations).float().to(device)
-            
-            if next_done.any():
-                finished_rewards = sum_rewards[next_done.bool()]
-                for r in finished_rewards:
-                    sum_rewards_hist.append(r.item())
-                    episode_count += 1
-                    if wandb_enabled:
-                        wandb.log({"train/episode_reward": r.item()}, step=global_step)
-                sum_rewards[next_done.bool()] = 0
-        
-        # ========== 计算 GAE ==========
-        with torch.no_grad():
-            next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
-            lastgaelam = 0
-            
-            for t in reversed(range(args.num_steps)):
-                if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
-                    nextvalues = next_value
-                else:
-                    nextnonterminal = 1.0 - dones[t + 1]
-                    nextvalues = values[t + 1]
+            # ========== 收集数据 ==========
+            for step in range(args.num_steps):
+                global_step += args.num_envs
+                obs[step] = next_obs
+                dones[step] = next_done
                 
-                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = (
-                    delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-                )
-            
-            returns = advantages + values
-        
-        # ========== 展平数据 ==========
-        b_obs = obs.reshape((-1, obs_dim))
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1, action_dim))
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
-        
-        # ========== PPO 更新 ==========
-        b_inds = np.arange(args.batch_size)
-        clipfracs = []
-        
-        for epoch in range(args.update_epochs):
-            np.random.shuffle(b_inds)
-            
-            for start in range(0, args.batch_size, args.minibatch_size):
-                end = start + args.minibatch_size
-                mb_inds = b_inds[start:end]
-                
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds], b_actions[mb_inds]
-                )
-                logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
-                
+                # 采样动作
                 with torch.no_grad():
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs.append(((ratio - 1.0).abs() > args.clip_coef).float().mean().item())
+                    action, logprob, _, value = agent.get_action_and_value(next_obs)
+                    values[step] = value.flatten()
+                actions[step] = action
+                logprobs[step] = logprob
                 
-                mb_advantages = b_advantages[mb_inds]
-                if args.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                # 执行动作 (JaxToTorch wrapper 会处理 tensor 转换)
+                next_obs, reward, terminations, truncations, infos = envs.step(action)
+                next_obs = next_obs.to(device)
+                reward = reward.to(device)
                 
-                # Policy loss
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                rewards[step] = reward
+                sum_rewards += reward
                 
-                # Value loss
-                newvalue = newvalue.view(-1)
-                if args.clip_vloss:
-                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
-                    v_clipped = b_values[mb_inds] + torch.clamp(
-                        newvalue - b_values[mb_inds], -args.clip_coef, args.clip_coef
-                    )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                    v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
-                else:
-                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                # 处理 episode 结束
+                next_done = (terminations | truncations).float().to(device)
                 
-                entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
-                
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-                optimizer.step()
+                if next_done.any():
+                    finished_rewards = sum_rewards[next_done.bool()]
+                    for r in finished_rewards:
+                        sum_rewards_hist.append(r.item())
+                        episode_count += 1
+                        if wandb_enabled:
+                            wandb.log({"train/episode_reward": r.item()}, step=global_step)
+                    sum_rewards[next_done.bool()] = 0
             
-            # 早停
-            if args.target_kl is not None and approx_kl > args.target_kl:
-                break
-        
-        # ========== 日志记录 ==========
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-        
-        iter_time = time.time() - iter_start_time
-        
-        if wandb_enabled:
-            wandb.log({
-                "charts/learning_rate": optimizer.param_groups[0]["lr"],
-                "charts/SPS": int(args.num_envs * args.num_steps / iter_time),
-                "charts/episode_count": episode_count,
-                "losses/policy_loss": pg_loss.item(),
-                "losses/value_loss": v_loss.item(),
-                "losses/entropy": entropy_loss.item(),
-                "losses/approx_kl": approx_kl.item(),
-                "losses/clipfrac": np.mean(clipfracs),
-                "losses/explained_variance": explained_var,
-            }, step=global_step)
-        
-        # 打印进度
-        if iteration % 10 == 0 or iteration == 1:
-            avg_reward = np.mean(sum_rewards_hist[-100:]) if sum_rewards_hist else 0
-            print(f"Iter {iteration}/{args.num_iterations} | "
-                  f"Steps: {global_step:,} | "
-                  f"Episodes: {episode_count} | "
-                  f"Avg Reward (last 100): {avg_reward:.2f} | "
-                  f"Time: {iter_time:.2f}s")
-    
+            # ========== 计算 GAE ==========
+            with torch.no_grad():
+                next_value = agent.get_value(next_obs).reshape(1, -1)
+                advantages = torch.zeros_like(rewards).to(device)
+                lastgaelam = 0
+                
+                for t in reversed(range(args.num_steps)):
+                    if t == args.num_steps - 1:
+                        nextnonterminal = 1.0 - next_done
+                        nextvalues = next_value
+                    else:
+                        nextnonterminal = 1.0 - dones[t + 1]
+                        nextvalues = values[t + 1]
+                    
+                    delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
+                    advantages[t] = lastgaelam = (
+                        delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                    )
+                
+                returns = advantages + values
+            
+            # ========== 展平数据 ==========
+            b_obs = obs.reshape((-1, obs_dim))
+            b_logprobs = logprobs.reshape(-1)
+            b_actions = actions.reshape((-1, action_dim))
+            b_advantages = advantages.reshape(-1)
+            b_returns = returns.reshape(-1)
+            b_values = values.reshape(-1)
+            
+            # ========== PPO 更新 ==========
+            b_inds = np.arange(args.batch_size)
+            clipfracs = []
+            
+            for epoch in range(args.update_epochs):
+                np.random.shuffle(b_inds)
+                
+                for start in range(0, args.batch_size, args.minibatch_size):
+                    end = start + args.minibatch_size
+                    mb_inds = b_inds[start:end]
+                    
+                    _, newlogprob, entropy, newvalue = agent.get_action_and_value(
+                        b_obs[mb_inds], b_actions[mb_inds]
+                    )
+                    logratio = newlogprob - b_logprobs[mb_inds]
+                    ratio = logratio.exp()
+                    
+                    with torch.no_grad():
+                        old_approx_kl = (-logratio).mean()
+                        approx_kl = ((ratio - 1) - logratio).mean()
+                        clipfracs.append(((ratio - 1.0).abs() > args.clip_coef).float().mean().item())
+                    
+                    mb_advantages = b_advantages[mb_inds]
+                    if args.norm_adv:
+                        mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    
+                    # Policy loss
+                    pg_loss1 = -mb_advantages * ratio
+                    pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                    
+                    # Value loss
+                    newvalue = newvalue.view(-1)
+                    if args.clip_vloss:
+                        v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
+                        v_clipped = b_values[mb_inds] + torch.clamp(
+                            newvalue - b_values[mb_inds], -args.clip_coef, args.clip_coef
+                        )
+                        v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                        v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                    else:
+                        v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    
+                    entropy_loss = entropy.mean()
+                    loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                    
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                    optimizer.step()
+                
+                # 早停
+                if args.target_kl is not None and approx_kl > args.target_kl:
+                    break
+            
+            # ========== 日志记录 ==========
+            y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
+            var_y = np.var(y_true)
+            explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+            
+            iter_time = time.time() - iter_start_time
+            
+            if wandb_enabled:
+                wandb.log({
+                    "charts/learning_rate": optimizer.param_groups[0]["lr"],
+                    "charts/SPS": int(args.num_envs * args.num_steps / iter_time),
+                    "charts/episode_count": episode_count,
+                    "losses/policy_loss": pg_loss.item(),
+                    "losses/value_loss": v_loss.item(),
+                    "losses/entropy": entropy_loss.item(),
+                    "losses/approx_kl": approx_kl.item(),
+                    "losses/clipfrac": np.mean(clipfracs),
+                    "losses/explained_variance": explained_var,
+                }, step=global_step)
+            
+
+            # 打印进度
+            if iteration % 10 == 0 or iteration == 1:
+                avg_reward = np.mean(sum_rewards_hist[-100:]) if sum_rewards_hist else 0
+                # 计算平均长度
+            
+                print(f"Iter {iteration}/{args.num_iterations} | Steps: {global_step/1e6:.2f}M/{args.total_timesteps/1e6:.2f}M")
+                
+                # [修改 C] 打印更详细的调试信息
+                # 1. 任务表现: 奖励和存活时长
+                print(f"  [Perf] Avg Rew: {avg_reward:.2f}")
+                
+                # 2. 网络健康度: 
+                #    Val (Critic误差): 越低越好
+                #    Ent (策略熵): 代表探索欲望。如果迅速掉到 0 说明过早收敛(学傻了)
+                #    KL  (更新幅度): 应该在 0.01 左右。太大说明学习率太高，太小说明学不动
+                print(f"  [Loss] Val: {v_loss.item():.4f} | Pol: {pg_loss.item():.4f} | "
+                    f"Ent: {entropy_loss.item():.4f} | KL: {approx_kl.item():.4f}")
+                
+                print(f"  [Time] {iter_time:.2f}s | SPS: {int(args.num_envs * args.num_steps / iter_time)}")
+                print("-" * 50)
+                # ================= [插入点 3] 自动保存逻辑 =================
+                # 1. 每次打印日志都保存一下最新模型 (覆盖)
+                if model_path is not None:
+                    torch.save(agent.state_dict(), model_path)
+                
+                # 2. 如果奖励创新高，额外存一份 "best_model"
+                if avg_reward > best_reward and iteration > 10:  # 前10次不稳定，不存
+                    best_reward = avg_reward
+                    torch.save(agent.state_dict(), best_model_path)
+                    print(f"  [★] 新纪录！最佳模型已保存 (Rew: {best_reward:.2f})")
+                # =========================================================
+    # ========== [新增] 捕获中断 ==========
+    except KeyboardInterrupt:
+        print("\n\n[警报] 用户手动停止训练 (Ctrl+C)！")
+        if model_path is not None:
+            torch.save(agent.state_dict(), model_path)
+            print(f"  [安全] 模型已紧急保存到: {model_path}")
+        print("正在关闭环境...")
+        envs.close()
+        return sum_rewards_hist
+    # ===================================
     # ========== 保存模型 ==========
     train_time = time.time() - train_start_time
-    print(f"\nTraining completed in {train_time:.2f}s ({global_step:,} steps)")
+    # 计算分和秒
+    m, s = divmod(int(train_time), 60)
+    
+    # 打印格式: "Training completed in 28m 52s ..."
+    print(f"\nTraining completed in {m}m {s}s ({global_step:,} steps)")
     
     if model_path is not None:
         torch.save(agent.state_dict(), model_path)
@@ -597,31 +668,37 @@ def evaluate_ppo(
     model_path: Path,
     render: bool = True,
 ) -> tuple[list[float], list[int]]:
-    """评估训练好的模型。
-    
-    Args:
-        args: 配置
-        n_eval: 评估 episode 数
-        model_path: 模型路径
-        render: 是否渲染
-        
-    Returns:
-        episode_rewards: 各 episode 的总奖励
-        episode_lengths: 各 episode 的长度
-    """
+    """调试版评估函数：打印动作和状态详情。"""
     set_seeds(args.seed)
+    # 强制使用 CPU 进行评估，避免 tensor device 错误
     device = torch.device("cpu")
     
-    # 创建单环境
+    print(f"\n[Eval] 加载模型: {model_path}")
+    print(f"[Eval] 渲染模式: {render}")
+
+    # 1. 创建单环境 (num_envs=1)
+    # 注意：必须确保这里使用的 config 和训练时一致
     args_eval = Args.create(**{**vars(args), "num_envs": 1})
     eval_env = make_env(args_eval, jax_device="cpu", torch_device=device)
     
     obs_dim = eval_env.single_observation_space.shape[0]
     action_dim = eval_env.single_action_space.shape[0]
     
-    # 加载模型
+    # 2. 加载模型
     agent = Agent(obs_dim, action_dim, hidden_dim=args.hidden_dim).to(device)
-    agent.load_state_dict(torch.load(model_path, map_location=device))
+    try:
+        # 尝试加载权重
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+        # 兼容只保存了 state_dict 或保存了整个 dict 的情况
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+            agent.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            agent.load_state_dict(checkpoint)
+        print("[Eval] 模型加载成功！")
+    except Exception as e:
+        print(f"[Eval] 模型加载失败: {e}")
+        return [], []
+
     agent.eval()
     
     episode_rewards = []
@@ -629,6 +706,7 @@ def evaluate_ppo(
     
     with torch.no_grad():
         for episode in range(n_eval):
+            print(f"\n=== Episode {episode + 1} Start ===")
             obs, _ = eval_env.reset(seed=args.seed + episode)
             obs = obs.to(device)
             
@@ -637,27 +715,88 @@ def evaluate_ppo(
             done = False
             
             while not done:
+                # if steps == 0:  # 只看第一步，方便对比
+                #     print("\n[DEBUG - Eval] First Observation Vector (前20位):")
+                #     # 这里的 obs 是经过 Wrapper 处理过的完美数据
+                #     print(obs[0, :20].cpu().numpy()) 
+                #     print("[DEBUG - Eval] First Observation Vector (最后20位 - 历史信息):")
+                #     print(obs[0, -20:].cpu().numpy())
+                # 获取动作
+                # 尝试 deterministic=True (训练好的表现) 和 False (带一点随机性)
+                # 如果它不动，你可以临时改成 False 试试
                 action, _, _, _ = agent.get_action_and_value(obs, deterministic=True)
+                # ====================================================
+                # [DEBUG] 打印 eval 环境下的网络原始输出
+                # ====================================================
+                # if steps == 0: # 只打印第一步
+                raw_act_eval = action[0].cpu().numpy()
+                print(f"\n[VS] Eval Raw Output: {raw_act_eval}")
+                    # print(f"[VS] Eval Obs Sum  : {obs.sum().item():.5f}") # 双重确认输入校验和
+                # ====================================================
+                # if steps == 0:
+                #     print(f"[DEBUG - Eval] Network Output Action (Raw): {action[0].cpu().numpy()}")
+                # ====================================================
+                # [超级调试补丁] 强制悬停模式
+                # ====================================================
+                # 1. 给足油门 (Raw 0.5 => 75% 油门)
+                # action[0, 3] = 0.5  
+                
+                # 2. [关键] 强制姿态水平 (Roll/Pitch/Yaw = 0)
+                # 只有把这两个设为 0，推力才能全部用于对抗重力！
+                # action[0, 0] = 0.0  # Roll
+                # action[0, 1] = 0.0  # Pitch (修正之前的 -0.93)
+                # action[0, 2] = 0.0  # Yaw   (修正之前的 -0.99)
+                
+                # 确保截断
+                action = torch.clamp(action, -1.0, 1.0)
+                # ====================================================
+                # --- [调试打印] ---
+                # 打印前 5 步和最后 5 步，或者每 50 步打印一次
+                # if steps < 5 or steps % 50 == 0:
+                #     raw_act = action[0].cpu().numpy()
+                #     # 获取当前高度
+                #     pos_z = obs[0, 0].item() # 假设 0 是 pos_z (如果是58维)
+                #     if obs_dim > 50: # 如果是全观测
+                #          # 根据你的 observation.py，pos 在前 3 位 (如果改回了3D) 或 pos_z 在第 0 位
+                #          pass
+
+                #     print(f"Step {steps:03d} | "
+                #           f"Action(Raw): {raw_act} | " # [-1, 1] 之间的值
+                #           f"Pos_Z: {pos_z:.4f}")
+
+                # 执行动作
                 obs, reward, terminated, truncated, info = eval_env.step(action)
                 obs = obs.to(device)
                 
                 if render:
                     eval_env.unwrapped.render()
+                    # 稍微睡一下，不然画面太快看不清
+                    time.sleep(0.02) 
                 
                 episode_reward += reward[0].item()
                 steps += 1
-                done = terminated[0].item() or truncated[0].item()
+                
+                # 检查是否撞毁
+                term = terminated[0].item()
+                trunc = truncated[0].item()
+                done = term or trunc
+                
+                if done:
+                    print(f"!!! Episode End at Step {steps} !!!")
+                    print(f"Reason: Terminated={term}, Truncated={trunc}")
+                    # 检查 info 里有没有碰撞信息
+                    if "final_info" in info:
+                        final_info = info["final_info"][0]
+                        if final_info:
+                            print(f"Final Info: {final_info}")
             
             episode_rewards.append(episode_reward)
             episode_lengths.append(steps)
             print(f"Episode {episode + 1}: Reward = {episode_reward:.2f}, Length = {steps}")
     
-    print(f"\nAverage Reward: {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
-    print(f"Average Length: {np.mean(episode_lengths):.1f}")
-    
+    print(f"\nAverage Reward: {np.mean(episode_rewards):.2f}")
     eval_env.close()
     return episode_rewards, episode_lengths
-
 
 # ============================================================================
 # 主函数
@@ -706,7 +845,7 @@ def main(
     wandb_enabled: bool = False,
     train: bool = True,
     eval: int = 0,
-    config_file: str = "level0_no_obst.toml",
+    config_file: str = None,
     load_config_from: str = None,
     **kwargs,
 ):
@@ -729,11 +868,11 @@ def main(
                 kwargs[key] = val
     
     # 创建配置
-    kwargs["config_file"] = config_file
+    # kwargs["config_file"] = config_file
     args = Args.create(**kwargs)
     
     # 路径设置
-    model_path = Path(__file__).parent / "ppo_racing.ckpt"
+    model_path = Path(__file__).parent /"checkpoints" / "ppo_racing.ckpt"
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     jax_device = args.jax_device
     

@@ -105,7 +105,7 @@ class RacingRewardWrapper(VectorWrapper):
         """执行一步，计算 shaped reward。"""
         # 保存当前 action (用于下一步计算 smooth)
         action_array = np.array(action, dtype=np.float32).reshape(self.num_envs, -1)
-        action = action.at[..., 2].set(0.0)  # 强制 yaw 为 0
+        # action = action.at[..., 2].set(0.0)  # 强制 yaw 为 0
 
         # 执行环境 step
         obs, original_reward, terminated, truncated, info = self.env.step(action)

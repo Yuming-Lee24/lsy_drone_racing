@@ -1,7 +1,10 @@
-"""RL-based Racing Controller.
+"""PPO Racing Controller - 用于 sim.py 的推理控制器
 
-使用 PPO 训练的策略进行无人机竞速控制。
-观测空间与训练时的 RacingObservationWrapper 一致 (84D)。
+将训练好的 PPO checkpoint 适配到单环境推理接口。
+核心要点：观测处理逻辑必须与训练时的 RacingObservationWrapper 完全一致。
+
+使用方法:
+    python scripts/sim.py --config level0_no_obst.toml --controller ppo_racing_controller.py
 """
 
 from __future__ import annotations
@@ -11,7 +14,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+import torch.nn as nn
 from scipy.spatial.transform import Rotation
+from drone_controllers.mellinger.params import ForceTorqueParams
 
 from lsy_drone_racing.control import Controller
 
@@ -20,49 +25,52 @@ if TYPE_CHECKING:
 
 
 # ============================================================================
-# Agent 网络定义 (与训练时一致)
+# 网络定义 (与 ppo_racing.py 完全一致)
 # ============================================================================
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    """正交初始化."""
+def layer_init(layer: nn.Module, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Module:
+    """正交初始化网络层。"""
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
 
-class Agent(torch.nn.Module):
-    """PPO Agent 网络."""
+class Agent(nn.Module):
+    """PPO Agent 网络 (与训练时完全一致)。"""
     
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 512):
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 256):
         super().__init__()
         
-        self.critic = torch.nn.Sequential(
-            layer_init(torch.nn.Linear(obs_dim, hidden_dim)),
-            torch.nn.Tanh(),
-            layer_init(torch.nn.Linear(hidden_dim, hidden_dim)),
-            torch.nn.Tanh(),
-            layer_init(torch.nn.Linear(hidden_dim, 1), std=1.0),
+        # Critic 网络
+        self.critic = nn.Sequential(
+            layer_init(nn.Linear(obs_dim, hidden_dim)),
+            nn.Tanh(),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            nn.Tanh(),
+            layer_init(nn.Linear(hidden_dim, 1), std=1.0),
         )
         
-        self.actor_mean = torch.nn.Sequential(
-            layer_init(torch.nn.Linear(obs_dim, hidden_dim)),
-            torch.nn.Tanh(),
-            layer_init(torch.nn.Linear(hidden_dim, hidden_dim)),
-            torch.nn.Tanh(),
-            layer_init(torch.nn.Linear(hidden_dim, action_dim), std=0.01),
-            torch.nn.Tanh(),
+        # Actor 网络
+        self.actor_mean = nn.Sequential(
+            layer_init(nn.Linear(obs_dim, hidden_dim)),
+            nn.Tanh(),
+            layer_init(nn.Linear(hidden_dim, hidden_dim)),
+            nn.Tanh(),
+            layer_init(nn.Linear(hidden_dim, action_dim), std=0.01),
+            nn.Tanh(),
         )
         
+        # 动作标准差
         if action_dim == 4:
-            init_logstd = torch.tensor([[-1.0, -1.0, -1.0, 0.0]])
-        else:
-            init_logstd = torch.zeros(1, action_dim)
-        self.actor_logstd = torch.nn.Parameter(init_logstd)
+            init_logstd = torch.tensor([[-1.0, -1.0, -1.0, -0.5]])
+        self.actor_logstd = nn.Parameter(init_logstd)
     
-    def get_value(self, x):
-        return self.critic(x)
-    
-    def get_action_and_value(self, x, action=None, deterministic=False):
+    def get_action_and_value(
+        self, 
+        x: torch.Tensor, 
+        action: torch.Tensor | None = None, 
+        deterministic: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         action_mean = self.actor_mean(x)
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
@@ -81,241 +89,350 @@ class Agent(torch.nn.Module):
 
 
 # ============================================================================
-# 控制器
+# 观测处理 (单环境版本，与 RacingObservationWrapper 逻辑一致)
 # ============================================================================
 
-class RLRacingController(Controller):
-    """使用 RL 策略的竞速控制器."""
+class ObservationProcessor:
+    """单环境观测处理器，复刻 RacingObservationWrapper 的逻辑。
+    
+    关键时序：
+    - 训练时，历史在 step 开始时用上一步的 obs 更新
+    - prev_action 在 step 结束时更新
+    - 这里需要精确复刻这个时序
+    """
     
     # 门的局部坐标系下 4 个角点偏移
     GATE_CORNERS_LOCAL = np.array([
-        [0.0, -0.2,  0.2],
-        [0.0,  0.2,  0.2],
-        [0.0,  0.2, -0.2],
-        [0.0, -0.2, -0.2],
+        [0.0, -0.2,  0.2],  # 左上
+        [0.0,  0.2,  0.2],  # 右上
+        [0.0,  0.2, -0.2],  # 右下
+        [0.0, -0.2, -0.2],  # 左下
     ], dtype=np.float32)
     
-    # 历史状态维度
-    HISTORY_STATE_DIM = 13  # pos(3) + quat(4) + vel(3) + ang_vel(3)
+    # 维度常量
+    BASE_OBS_DIM = 56
+    HISTORY_STATE_DIM = 16  # pos_z(1) + rot_mat(9) + vel(3) + ang_vel(3)
     
-    def __init__(self, obs: dict[str, NDArray], info: dict, config: dict):
-        """初始化控制器."""
-        super().__init__(obs, info, config)
+    def __init__(
+        self,
+        n_gates: int = 4,
+        n_obstacles: int = 4,
+        stage: int = 1,
+        n_history: int = 2,
+    ):
+        self.n_gates = n_gates
+        self.n_obstacles = n_obstacles
+        self.stage = stage
+        self.n_history = n_history
         
-        self.freq = config.env.freq
-        self.n_gates = len(config.env.track.gates)
-        self.n_obstacles = len(config.env.track.get("obstacles", []))
+        self.OBS_DIM = self.BASE_OBS_DIM + n_history * self.HISTORY_STATE_DIM
         
-        # 历史帧数 (与训练时一致)
-        self.n_history = 2
+        # 内部状态
+        self._prev_action = np.zeros(4, dtype=np.float32)
+        self._history_buffer = np.zeros((n_history, self.HISTORY_STATE_DIM), dtype=np.float32)
+        self._initialized = False
         
-        # 动作范围 (attitude 模式)
-        self.action_low = np.array([-1.0, -np.pi, -np.pi, -np.pi], dtype=np.float32)
-        self.action_high = np.array([1.0, np.pi, np.pi, np.pi], dtype=np.float32)
+        # 用于延迟更新历史的缓存
+        # 训练时：step 开始时用上一步的 obs 更新历史
+        # 所以我们需要缓存 compute_control 时的 obs，在下一次 compute_control 时更新历史
+        self._pending_history_obs = None
+    
+    def reset(self, obs: dict):
+        """重置内部状态。"""
+        self._prev_action = np.zeros(4, dtype=np.float32)
         
-        # 状态
-        self.prev_action = np.zeros(4, dtype=np.float32)
-        self._tick = 0
-        self._finished = False
-        
-        # 历史状态缓冲区 (n_history, 13)
-        self._history_buffer = np.zeros(
-            (self.n_history, self.HISTORY_STATE_DIM), 
-            dtype=np.float32
-        )
         # 用初始状态填充历史缓冲区
         init_state = self._extract_basic_state(obs)
         for i in range(self.n_history):
             self._history_buffer[i] = init_state
         
-        # 加载 RL 策略
-        self.device = torch.device("cpu")
-        self.obs_dim = 58 + self.n_history * self.HISTORY_STATE_DIM  # 84
-        self.action_dim = 4
-        
-        self.agent = Agent(self.obs_dim, self.action_dim, hidden_dim=512).to(self.device)
-        
-        # 模型路径
-        model_path = Path(__file__).parent.parent / "rl_training" / "ppo_racing.ckpt"
-        if model_path.exists():
-            self.agent.load_state_dict(
-                torch.load(model_path, map_location=self.device, weights_only=True)
-            )
-            print(f"[RLRacingController] 加载模型: {model_path}")
-        else:
-            print(f"[RLRacingController] 警告: 模型不存在 {model_path}，使用随机策略")
-        
-        self.agent.eval()
+        # 重置缓存
+        self._pending_history_obs = None
+        self._initialized = True
     
-    def _extract_basic_state(self, obs: dict) -> NDArray:
-        """提取基础状态 (pos, quat, vel, ang_vel)。
+    def process(self, obs: dict) -> NDArray:
+        """将观测字典转换为向量 (单环境版本)。
         
-        Returns:
-            (13,) 基础状态向量
+        时序说明：
+        - 首先检查是否有待更新的历史（上一次 compute_control 的 obs）
+        - 然后用当前的 history 和 prev_action 生成观测
+        - 最后缓存当前 obs 用于下一次更新历史
         """
-        pos = np.array(obs["pos"]).flatten()[:3]
-        quat = np.array(obs["quat"]).flatten()[:4]
-        vel = np.array(obs["vel"]).flatten()[:3]
-        ang_vel = np.array(obs["ang_vel"]).flatten()[:3]
+        if not self._initialized:
+            self.reset(obs)
         
-        return np.concatenate([pos, quat, vel, ang_vel]).astype(np.float32)
+        # 先用缓存的 obs 更新历史（如果有的话）
+        # 这复刻了训练时 step 开始时用 cache 更新历史的逻辑
+        if self._pending_history_obs is not None:
+            self._update_history_buffer(self._pending_history_obs)
+        
+        # 1. 提取原始数据
+        pos = np.array(obs["pos"])                    # (3,)
+        pos_z = pos[2:3]                              # (1,)
+        vel = np.array(obs["vel"])                    # (3,)
+        ang_vel = np.array(obs["ang_vel"])            # (3,)
+        quat = np.array(obs["quat"])                  # (4,) [x, y, z, w]
+        target_gate = int(obs["target_gate"])         # scalar
+        gates_pos = np.array(obs["gates_pos"])        # (n_gates, 3)
+        gates_quat = np.array(obs["gates_quat"])      # (n_gates, 4)
+        obstacles_pos = np.array(obs["obstacles_pos"])  # (n_obstacles, 3)
+        
+        # 2. 计算无人机姿态
+        rot_matrix = Rotation.from_quat(quat).as_matrix()  # (3, 3)
+        rot_matrix_flat = rot_matrix.flatten()             # (9,)
+        vel_body = self._world_to_body(vel, rot_matrix)    # (3,)
+        
+        # 3. 计算门角点 (机体坐标)
+        gate1_idx = np.clip(target_gate, 0, self.n_gates - 1)
+        gate2_idx = np.clip(target_gate + 1, 0, self.n_gates - 1)
+        
+        if target_gate == -1:  # 已完赛
+            gate1_idx = self.n_gates - 1
+            gate2_idx = self.n_gates - 1
+        
+        gate1_corners = self._compute_gate_corners_body(
+            gates_pos[gate1_idx], gates_quat[gate1_idx], pos, rot_matrix
+        )
+        gate2_corners = self._compute_gate_corners_body(
+            gates_pos[gate2_idx], gates_quat[gate2_idx], pos, rot_matrix
+        )
+        
+        # 4. 计算障碍物位置 (机体坐标)
+        obstacles_body = self._compute_obstacles_body(obstacles_pos, pos, rot_matrix)
+        
+        # 5. 拼接观测向量
+        obs_parts = [
+            pos_z,              # 1D
+            vel_body,           # 3D
+            ang_vel,            # 3D
+            rot_matrix_flat,    # 9D
+            gate1_corners,      # 12D
+            gate2_corners,      # 12D
+            self._prev_action,  # 4D
+            obstacles_body,     # 12D
+        ]
+        
+        # 6. 添加历史状态
+        if self.n_history > 0:
+            history_flat = self._history_buffer.flatten()
+            obs_parts.append(history_flat)
+        
+        obs_vector = np.concatenate(obs_parts)
+        
+        # 7. 课程学习 Masking
+        obs_vector = self._apply_stage_masking(obs_vector)
+        
+        # 缓存当前 obs，用于下一次 process 时更新历史
+        self._pending_history_obs = obs
+        
+        return obs_vector.astype(np.float32)
+    
+    def update_prev_action(self, action_raw: NDArray):
+        """更新 prev_action (在 step_callback 中调用)。"""
+        self._prev_action = action_raw.copy()
     
     def _update_history_buffer(self, obs: dict):
-        """更新历史状态缓冲区。"""
+        """更新历史缓冲区。"""
         current_state = self._extract_basic_state(obs)
-        
-        # 滚动：丢弃最旧的，添加最新的
         self._history_buffer = np.concatenate([
             self._history_buffer[1:],
             current_state[np.newaxis, :]
         ], axis=0)
     
-    def compute_control(
-        self, 
-        obs: dict[str, NDArray], 
-        info: dict | None = None
-    ) -> NDArray:
-        """计算控制指令."""
-        # 检查是否完赛
-        if obs["target_gate"] == -1:
-            self._finished = True
-            return np.array([0.5, 0.0, 0.0, 0.0], dtype=np.float32)
+    def _extract_basic_state(self, obs: dict) -> NDArray:
+        """提取基础状态 (pos_z + rot_mat + vel + ang_vel)。"""
+        pos = np.array(obs["pos"])
+        quat = np.array(obs["quat"])
+        vel = np.array(obs["vel"])
+        ang_vel = np.array(obs["ang_vel"])
         
-        # 构建 84D 观测向量
-        obs_vector = self._build_observation(obs)
+        pos_z = pos[2:3]  # (1,)
+        rot_matrix = Rotation.from_quat(quat).as_matrix()
+        rot_flat = rot_matrix.flatten()  # (9,)
         
-        # 转换为 tensor
-        obs_tensor = torch.tensor(obs_vector, dtype=torch.float32).unsqueeze(0).to(self.device)
-        
-        # 推理
-        with torch.no_grad():
-            action, _, _, _ = self.agent.get_action_and_value(obs_tensor, deterministic=True)
-            action = action.squeeze(0).cpu().numpy()
-        
-        # 强制 yaw 为 0
-        action[2] = 0.0
-        
-        # 缩放动作
-        action = self._scale_action(action)
-        
-        # 更新状态
-        self.prev_action = action.copy()
-        self._update_history_buffer(obs)
-        
-        return action.astype(np.float32)
+        return np.concatenate([pos_z, rot_flat, vel, ang_vel])  # (16,)
     
-    def _build_observation(self, obs: dict[str, NDArray]) -> NDArray:
-        """构建 84D 观测向量。
-        
-        结构:
-            [0:3]   - pos (世界坐标)
-            [3:6]   - vel_body (机体坐标)
-            [6:9]   - ang_vel
-            [9:18]  - rot_matrix (展平)
-            [18:30] - gate1_corners
-            [30:42] - gate2_corners
-            [42:46] - prev_action
-            [46:58] - obstacles
-            [58:84] - history (2 * 13 = 26)
-        """
-        # 基础状态
-        pos = obs["pos"]
-        vel = obs["vel"]
-        ang_vel = obs["ang_vel"]
-        quat = obs["quat"]
-        
-        # 旋转矩阵
-        rot = Rotation.from_quat(quat)
-        rot_matrix = rot.as_matrix().flatten()
-        
-        # 速度转到机体坐标系
-        vel_body = rot.inv().apply(vel)
-        
-        # 门角点
-        target_gate = int(obs["target_gate"])
-        gates_pos = obs["gates_pos"]
-        gates_quat = obs["gates_quat"]
-        
-        gate1_corners = self._compute_gate_corners_body(
-            target_gate, gates_pos, gates_quat, pos, rot
-        )
-        gate2_corners = self._compute_gate_corners_body(
-            target_gate + 1, gates_pos, gates_quat, pos, rot
-        )
-        
-        # 障碍物
-        obstacles_body = self._compute_obstacles_body(
-            obs.get("obstacles_pos", np.zeros((0, 3))), pos, rot
-        )
-        
-        # 历史状态 (展平)
-        history_flat = self._history_buffer.flatten()  # (26,)
-        
-        # 拼接
-        obs_vector = np.concatenate([
-            pos,                # 3
-            vel_body,           # 3
-            ang_vel,            # 3
-            rot_matrix,         # 9
-            gate1_corners,      # 12
-            gate2_corners,      # 12
-            self.prev_action,   # 4
-            obstacles_body,     # 12
-            history_flat,       # 26
-        ])  # Total: 84
-        
-        return obs_vector.astype(np.float32)
+    def _world_to_body(self, vec_world: NDArray, rot_matrix: NDArray) -> NDArray:
+        """世界坐标 -> 机体坐标。"""
+        return rot_matrix.T @ vec_world
     
     def _compute_gate_corners_body(
         self,
-        gate_idx: int,
-        gates_pos: NDArray,
-        gates_quat: NDArray,
+        gate_pos: NDArray,
+        gate_quat: NDArray,
         drone_pos: NDArray,
-        drone_rot: Rotation,
+        drone_rot: NDArray,
     ) -> NDArray:
-        """计算门的 4 个角点在机体坐标系下的位置."""
-        if gate_idx < 0 or gate_idx >= len(gates_pos):
-            return np.zeros(12, dtype=np.float32)
+        """计算门的 4 个角点在机体坐标系下的位置。"""
+        gate_rot = Rotation.from_quat(gate_quat).as_matrix()
         
-        gate_pos = gates_pos[gate_idx]
-        gate_quat = gates_quat[gate_idx]
-        gate_rot = Rotation.from_quat(gate_quat)
+        # 角点在世界坐标系下的位置
+        corners_world = (gate_rot @ self.GATE_CORNERS_LOCAL.T).T + gate_pos
         
-        corners_world = gate_pos + gate_rot.apply(self.GATE_CORNERS_LOCAL)
-        rel_world = corners_world - drone_pos
-        corners_body = drone_rot.inv().apply(rel_world)
+        # 相对于无人机的位置
+        corners_rel = corners_world - drone_pos
         
-        return corners_body.flatten().astype(np.float32)
+        # 转换到机体坐标系
+        corners_body = (drone_rot.T @ corners_rel.T).T
+        
+        return corners_body.flatten()  # (12,)
     
     def _compute_obstacles_body(
         self,
         obstacles_pos: NDArray,
         drone_pos: NDArray,
-        drone_rot: Rotation,
+        drone_rot: NDArray,
     ) -> NDArray:
-        """计算障碍物在机体坐标系下的位置."""
-        result = np.full(12, 10.0, dtype=np.float32)
+        """计算障碍物在机体坐标系下的相对位置。"""
+        if obstacles_pos.size == 0 or obstacles_pos.shape[0] == 0:
+            return np.full(12, 10.0, dtype=np.float32)
         
-        if obstacles_pos.size == 0:
-            return result
+        # 使用障碍物轴线上距离无人机最近的点
+        obs_x = obstacles_pos[:, 0]
+        obs_y = obstacles_pos[:, 1]
+        obs_z_top = obstacles_pos[:, 2]
         
-        rel_world = obstacles_pos - drone_pos
-        rel_body = drone_rot.inv().apply(rel_world)
+        drone_z = drone_pos[2]
+        effective_obs_z = np.minimum(obs_z_top, drone_z)
         
+        effective_obs_pos = np.stack([obs_x, obs_y, effective_obs_z], axis=-1)
+        
+        # 计算相对位置
+        rel_world = effective_obs_pos - drone_pos
+        
+        # 旋转到机体坐标系
+        rel_body = (drone_rot.T @ rel_world.T).T
+        
+        # 按距离排序取最近的 4 个
         dists = np.linalg.norm(rel_body, axis=1)
-        sorted_idx = np.argsort(dists)[:4]
+        sorted_idx = np.argsort(dists)
         
-        nearest = rel_body[sorted_idx]
-        result[:nearest.size] = nearest.flatten()
+        n_keep = min(len(sorted_idx), 4)
+        result = np.full(12, 10.0, dtype=np.float32)
+        result[:n_keep * 3] = rel_body[sorted_idx[:n_keep]].flatten()
         
         return result
     
-    def _scale_action(self, action: NDArray) -> NDArray:
-        """缩放动作从 [-1, 1] 到实际范围."""
-        scale = (self.action_high - self.action_low) / 2.0
-        mean = (self.action_high + self.action_low) / 2.0
-        return np.clip(action, -1.0, 1.0) * scale + mean
+    def _apply_stage_masking(self, obs_vector: NDArray) -> NDArray:
+        """根据 stage 进行观测 masking。"""
+        obs_vector = obs_vector.copy()
+        
+        if self.stage == 0:
+            # Stage 0: 屏蔽 gate2 和障碍物
+            obs_vector[28:40] = obs_vector[16:28]
+            obs_vector[44:56] = 10.0
+        elif self.stage == 1:
+            # Stage 1: 只屏蔽障碍物
+            obs_vector[44:56] = 10.0
+        # Stage 2: 全开
+        
+        return obs_vector
+
+
+# ============================================================================
+# Controller 实现
+# ============================================================================
+
+class PPORacingController(Controller):
+    """PPO Racing Controller - 使用训练好的 PPO 网络进行控制。"""
+    
+    def __init__(self, obs: dict[str, NDArray], info: dict, config: dict):
+        super().__init__(obs, info, config)
+        
+        # ---------- 配置参数 ----------
+        self.n_gates = 4
+        self.n_obstacles = 4
+        self.n_history = 2
+        self.hidden_dim = 256
+        self.stage = 1
+        
+        # 计算观测维度
+        self.obs_dim = 56 + self.n_history * 16  # 88
+        self.action_dim = 4
+        
+        # ---------- 动作缩放参数 ----------
+        params = ForceTorqueParams.load(config.sim.drone_model)
+        self.thrust_min = 0.2
+        self.thrust_max = 0.8
+        
+        # action_sim_low = [-pi/2, -pi/2, -pi/2, thrust_min]
+        # action_sim_high = [pi/2, pi/2, pi/2, thrust_max]
+        self.action_low = np.array(
+            [-np.pi/2, -np.pi/2, -np.pi/2, self.thrust_min], dtype=np.float32
+        )
+        self.action_high = np.array(
+            [np.pi/2, np.pi/2, np.pi/2, self.thrust_max], dtype=np.float32
+        )
+        self.action_scale = (self.action_high - self.action_low) / 2.0
+        self.action_mean = (self.action_high + self.action_low) / 2.0
+        
+        print(f"[PPORacingController] obs_dim: {self.obs_dim}, action_dim: {self.action_dim}")
+        print(f"[PPORacingController] action_low: {self.action_low}")
+        print(f"[PPORacingController] action_high: {self.action_high}")
+        
+        # ---------- 观测处理器 ----------
+        self.obs_processor = ObservationProcessor(
+            n_gates=self.n_gates,
+            n_obstacles=self.n_obstacles,
+            stage=self.stage,
+            n_history=self.n_history,
+        )
+        
+        # ---------- 加载网络 ----------
+        self.device = torch.device("cpu")
+        self.agent = Agent(self.obs_dim, self.action_dim, self.hidden_dim).to(self.device)
+        
+        root_dir = Path(__file__).resolve().parent.parent
+        model_path = root_dir / "rl_training" / "checkpoints" / "ppo_racing.ckpt"
+        
+        print(f"[PPORacingController] Loading model from: {model_path}")
+        
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                self.agent.load_state_dict(checkpoint["model_state_dict"])
+            else:
+                self.agent.load_state_dict(checkpoint)
+            print("[PPORacingController] Model loaded successfully!")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model: {e}")
+        
+        self.agent.eval()
+        
+        # ---------- 初始化观测处理器 ----------
+        self.obs_processor.reset(obs)
+        
+        self._finished = False
+    
+    def compute_control(
+        self, obs: dict[str, NDArray], info: dict | None = None
+    ) -> NDArray:
+        """计算控制指令。"""
+        # 检查是否完赛
+        if obs["target_gate"] == -1:
+            self._finished = True
+        
+        # 1. 处理观测（内部会处理历史更新的时序）
+        obs_vector = self.obs_processor.process(obs)
+        obs_tensor = torch.tensor(obs_vector, dtype=torch.float32).unsqueeze(0).to(self.device)
+        
+        # 2. 网络推理
+        with torch.no_grad():
+            action_raw, _, _, _ = self.agent.get_action_and_value(obs_tensor, deterministic=True)
+            action_raw = action_raw.squeeze(0).cpu().numpy()
+        
+        # 3. 动作缩放: [-1, 1] -> [low, high]
+        action = self._scale_action(action_raw)
+        
+        # 4. 缓存 raw action 用于 step_callback 更新 prev_action
+        self._cached_action_raw = action_raw
+        
+        return action.astype(np.float32)
+    
+    def _scale_action(self, action_raw: NDArray) -> NDArray:
+        """将网络输出 [-1, 1] 缩放到真实动作范围。"""
+        action_clipped = np.clip(action_raw, -1.0, 1.0)
+        return action_clipped * self.action_scale + self.action_mean
     
     def step_callback(
         self,
@@ -326,16 +443,24 @@ class RLRacingController(Controller):
         truncated: bool,
         info: dict,
     ) -> bool:
-        """步进回调."""
-        self._tick += 1
+        """每步回调 - 更新 prev_action。
+        
+        注意：历史更新在下一次 compute_control 中进行（复刻训练时的时序）。
+        """
+        # 更新 prev_action（用缓存的 raw action）
+        if hasattr(self, '_cached_action_raw'):
+            self.obs_processor.update_prev_action(self._cached_action_raw)
+        
         return self._finished
     
     def episode_callback(self):
-        """Episode 结束回调."""
-        self._tick = 0
+        """Episode 结束回调。"""
+        pass
+    
+    def episode_reset(self):
+        """重置 episode 状态。"""
         self._finished = False
-        self.prev_action = np.zeros(4, dtype=np.float32)
-        self._history_buffer = np.zeros(
-            (self.n_history, self.HISTORY_STATE_DIM), 
-            dtype=np.float32
-        )
+        self.obs_processor._initialized = False
+        self.obs_processor._pending_history_obs = None
+        if hasattr(self, '_cached_action_raw'):
+            del self._cached_action_raw

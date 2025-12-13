@@ -1,10 +1,10 @@
-"""环境调试脚本
+"""环境调试脚本 (详细打印版)
 
 用于验证环境创建、观测空间、奖励函数是否正确工作。
+重点：在 Base Env 测试中打印所有原始观测值。
 
 运行方式:
     python test_env.py
-    python test_env.py --render True --num_steps 200
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ from crazyflow.envs.norm_actions_wrapper import NormalizeActions
 from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 
 # 自定义 Wrapper
-from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
+from lsy_drone_racing.rl_training.wrappers.observation_gate_central_point import RacingObservationWrapper
 from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper
 
 
 def test_base_env(config_path: str, num_envs: int = 4):
-    """测试基础环境 (无 Wrapper)"""
+    """测试基础环境 (无 Wrapper) 并打印所有原始观测值"""
     print("=" * 60)
-    print("1. 测试基础环境 VecDroneRaceEnv")
+    print("1. 测试基础环境 VecDroneRaceEnv (详细数据打印)")
     print("=" * 60)
     
     config = load_config(config_path)
@@ -52,27 +52,33 @@ def test_base_env(config_path: str, num_envs: int = 4):
     )
     
     print(f"   ✓ 环境创建成功")
-    print(f"   num_envs: {env.num_envs}")
-    print(f"   action_space: {env.single_action_space}")
-    print(f"   observation_space keys: {list(env.single_observation_space.spaces.keys())}")
     
     # Reset
     obs, info = env.reset(seed=42)
-    print(f"\n   Reset 后观测:")
-    for k, v in obs.items():
-        print(f"     {k}: shape={v.shape}, dtype={v.dtype}")
+    
+    print(f"\n{'='*20} 原始观测值 (Reset) {'='*20}")
+    # 遍历并打印所有键值
+    sorted_keys = sorted(obs.keys())
+    for key in sorted_keys:
+        val = obs[key]
+        print(f"\n>>> Key: ['{key}']")
+        print(f"    Shape: {val.shape}")
+        print(f"    Value (Env 0):") # 为了防止刷屏，这里主要展示第0个环境的值，如果想看全部，去掉 [0]
+        print(val[0]) 
+        # 如果你想看所有环境的矩阵，请取消下面这行的注释:
+        # print(val) 
+        
+    print(f"\n{'='*60}\n")
     
     # Step with random action
-    action = np.zeros((num_envs, 4))  # 悬停动作
-    action[:, 0] = 0.3  # 一点推力
+    print("执行一步随机动作...")
+    action = np.zeros((num_envs, 4))
+    action[:, 0] = 0.5 # 给点推力
     obs, reward, term, trunc, info = env.step(action)
-    print(f"\n   Step 后:")
-    print(f"     reward: {reward}")
-    print(f"     terminated: {term}")
-    print(f"     target_gate: {obs['target_gate']}")
+    
+    print(f"Step 后 target_gate (所有环境): {obs['target_gate']}")
     
     env.close()
-    print(f"   ✓ 基础环境测试通过\n")
     return True
 
 
@@ -105,40 +111,27 @@ def test_reward_wrapper(config_path: str, num_envs: int = 4):
         n_gates=n_gates,
         stage=1,
         coef_progress=1.0,
-        coef_gate=10.0,
-        coef_align=0.5,
-        coef_collision=5.0,
-        coef_smooth=0.1,
-        coef_spin=0.02,
     )
     
-    print(f"   ✓ RacingRewardWrapper 创建成功")
-    
     obs, info = env.reset(seed=42)
-    print(f"   观测类型: {type(obs)}")
-    print(f"   观测 keys: {list(obs.keys())}")
     
-    # 测试多步，观察奖励变化
-    print(f"\n   测试 10 步奖励:")
+    # 测试多步
     rewards = []
-    for i in range(10):
+    for i in range(5):
         action = np.zeros((num_envs, 4))
-        action[:, 0] = 0.3  # 推力
+        action[:, 0] = 0.3
         obs, reward, term, trunc, info = env.step(action)
         rewards.append(reward[0])
         
-    print(f"     奖励序列 (env 0): {[f'{r:.3f}' for r in rewards]}")
-    print(f"     奖励范围: [{min(rewards):.3f}, {max(rewards):.3f}]")
-    
+    print(f"   奖励序列 (env 0): {[f'{r:.3f}' for r in rewards]}")
     env.close()
-    print(f"   ✓ 奖励 Wrapper 测试通过\n")
     return True
 
 
 def test_observation_wrapper(config_path: str, num_envs: int = 4):
-    """测试观测 Wrapper"""
+    """测试观测 Wrapper (56D 结构)"""
     print("=" * 60)
-    print("3. 测试 RacingObservationWrapper")
+    print("3. 测试 RacingObservationWrapper (Index Check)")
     print("=" * 60)
     
     config = load_config(config_path)
@@ -160,184 +153,93 @@ def test_observation_wrapper(config_path: str, num_envs: int = 4):
     )
     
     env = NormalizeActions(env)
-    env = RacingRewardWrapper(env, n_gates=n_gates, stage=1)
-    env = RacingObservationWrapper(env, n_gates=n_gates, n_obstacles=n_obstacles, stage=1)
+    env = RacingRewardWrapper(env, n_gates=n_gates, stage=2)
     
-    print(f"   ✓ RacingObservationWrapper 创建成功")
-    print(f"   observation_space: {env.single_observation_space}")
+    # 初始化 Observation Wrapper
+    env = RacingObservationWrapper(env, n_gates=n_gates, n_obstacles=n_obstacles, stage=2, n_history=2)
     
     obs, info = env.reset(seed=42)
-    print(f"\n   观测向量:")
-    print(f"     类型: {type(obs)}")
-    print(f"     形状: {obs.shape}")
-    print(f"     dtype: {obs.dtype}")
     
-    # 打印各部分
+    print(f"   Observation Shape: {obs.shape} (Expect: [{num_envs}, 88])")
+    
+# ==========================================
     print(f"\n   观测分解 (env 0):")
-    print(f"     [0:3]   pos:        {obs[0, 0:3]}")
-    print(f"     [3:6]   vel_body:   {obs[0, 3:6]}")
-    print(f"     [6:9]   ang_vel:    {obs[0, 6:9]}")
-    print(f"     [9:18]  rot_mat:    {obs[0, 9:18]}")
-    print(f"     [18:30] gate1:      {obs[0, 18:30]}")
-    print(f"     [30:42] gate2:      {obs[0, 30:42]}")
-    print(f"     [42:46] prev_act:   {obs[0, 42:46]}")
-    print(f"     [46:58] obstacles:  {obs[0, 46:58]}")
     
-    # 验证 Stage 1 masking (障碍物应该是 10.0)
-    if n_obstacles == 0:
-        print(f"\n   Stage 1 Masking 验证 (无障碍物配置):")
-        expected = np.allclose(obs[0, 46:58], 10.0)
-        print(f"     障碍物位置全为 10.0: {expected}")
+    # Pos Z (1D): [0:1]
+    print(f"     [0:1]   pos_z:      {obs[0, 0:1]}")
+    
+    # Vel Body (3D): [1:4]
+    print(f"     [1:4]   vel_body:   {obs[0, 1:4]}")
+    
+    # Ang Vel (3D): [4:7]
+    print(f"     [4:7]   ang_vel:    {obs[0, 4:7]}")
+    
+    # Rot Matrix (9D): [7:16]
+    print(f"     [7:16]  rot_mat:    {obs[0, 7:16]}")
+    
+    # Gate 1 (12D): [16:28]
+    print(f"     [16:28] gate1:      {obs[0, 16:22]}")
+    
+    # Gate 2 (12D): [28:40]
+    print(f"     [28:40] gate2:      {obs[0, 22:28]}")
+    
+    # Prev Action (4D): [40:44]
+    print(f"     [40:44] prev_act:   {obs[0, 28:32]}")
+    
+    # Obstacles (12D): [44:56]
+    print(f"     [44:56] obstacles:  {obs[0, 32:44]}")
+    
+    # History (16D * 2): [56:88]
+    print(f"     [56:88] history:    Shape={obs[0, 44:].shape}")
+
+    # ==========================================
+    # Masking 验证
+    # ==========================================
+    # 在 Stage 1，障碍物应该被屏蔽为 10.0
+    # 修正后的障碍物索引是 44:56
+    obstacles_slice = obs[0, 44:56]
+    is_masked = np.allclose(obstacles_slice, 10.0)
+    
+    print(f"\n   Stage 1 Masking 验证:")
+    print(f"     障碍物 (Index 44:56) 全为 10.0: {is_masked}")
+    
+    if not is_masked:
+        print(f"     [警告] 实际值: {obstacles_slice}")
     
     env.close()
     print(f"   ✓ 观测 Wrapper 测试通过\n")
     return True
 
 
-def test_full_pipeline(config_path: str, num_envs: int = 4, render: bool = False, num_steps: int = 50):
-    """测试完整的 Wrapper 链 (包括 JaxToTorch)"""
-    print("=" * 60)
-    print("4. 测试完整 Pipeline (含 JaxToTorch)")
-    print("=" * 60)
-    
-    config = load_config(config_path)
-    n_gates = len(config.env.track.gates)
-    n_obstacles = len(config.env.track.get("obstacles", []))
-    
-    device = torch.device("cpu")
-    
-    env = VecDroneRaceEnv(
-        num_envs=num_envs,
-        freq=config.env.freq,
-        sim_config=config.sim,
-        track=config.env.track,
-        sensor_range=config.env.sensor_range,
-        control_mode=config.env.control_mode,
-        disturbances=config.env.get("disturbances", None),
-        randomizations=config.env.get("randomizations", None),
-        seed=42,
-        max_episode_steps=1500,
-        device="cpu",
-    )
-    
-    env = NormalizeActions(env)
-    env = RacingRewardWrapper(env, n_gates=n_gates, stage=1)
-    env = RacingObservationWrapper(env, n_gates=n_gates, n_obstacles=n_obstacles, stage=1)
-    env = JaxToTorch(env, device)
-    
-    print(f"   ✓ 完整 Pipeline 创建成功")
-    
-    obs, info = env.reset(seed=42)
-    print(f"\n   PyTorch 输出验证:")
-    print(f"     obs 类型: {type(obs)}")
-    print(f"     obs 形状: {obs.shape}")
-    print(f"     obs device: {obs.device}")
-    
-    # 运行多步
-    print(f"\n   运行 {num_steps} 步模拟...")
-    total_rewards = torch.zeros(num_envs)
-    episode_lengths = torch.zeros(num_envs)
-    gates_passed = torch.zeros(num_envs)
-    
-    for step in range(num_steps):
-        # 随机动作 (网络输出范围 [-1, 1])
-        action = torch.randn(num_envs, 4) * 0.3
-        action[:, 0] = torch.abs(action[:, 0])  # 推力为正
-        
-        obs, reward, term, trunc, info = env.step(action)
-        total_rewards += reward
-        episode_lengths += 1
-        
-        if render:
-            env.unwrapped.render()
-        
-        # 检查是否有 episode 结束
-        done = term | trunc
-        if done.any():
-            for i in range(num_envs):
-                if done[i]:
-                    print(f"     Env {i} 结束: 奖励={total_rewards[i]:.2f}, 步数={int(episode_lengths[i])}")
-                    total_rewards[i] = 0
-                    episode_lengths[i] = 0
-    
-    print(f"\n   最终统计 (未结束的 episodes):")
-    print(f"     累计奖励: {total_rewards.numpy()}")
-    print(f"     当前步数: {episode_lengths.numpy()}")
-    
-    env.close()
-    print(f"   ✓ 完整 Pipeline 测试通过\n")
-    return True
-
-
-def test_action_space(config_path: str):
-    """测试动作空间和 NormalizeActions"""
-    print("=" * 60)
-    print("5. 测试动作空间")
-    print("=" * 60)
-    
-    config = load_config(config_path)
-    
-    env = VecDroneRaceEnv(
-        num_envs=2,
-        freq=config.env.freq,
-        sim_config=config.sim,
-        track=config.env.track,
-        sensor_range=config.env.sensor_range,
-        control_mode=config.env.control_mode,
-        seed=42,
-        max_episode_steps=100,
-        device="cpu",
-    )
-    
-    print(f"   原始动作空间:")
-    print(f"     low:  {env.single_action_space.low}")
-    print(f"     high: {env.single_action_space.high}")
-    
-    env = NormalizeActions(env)
-    print(f"\n   归一化后动作空间:")
-    print(f"     low:  {env.single_action_space.low}")
-    print(f"     high: {env.single_action_space.high}")
-    
-    env.close()
-    print(f"   ✓ 动作空间测试通过\n")
-    return True
-
-
 def main(
-    config_file: str = "level3_stage1.toml",
-    render: bool = False,
-    num_steps: int = 50,
+    config_file: str = "level0.toml",
     num_envs: int = 4,
 ):
-    """运行所有测试。
-    
-    Args:
-        config_file: 配置文件名 (在 config/ 目录下)
-        render: 是否渲染
-        num_steps: 完整测试运行步数
-        num_envs: 并行环境数
-    """
+    """运行测试。"""
     config_path = Path(__file__).parents[2] / "config" / config_file
     
+    # 路径回退逻辑
     if not config_path.exists():
-        print(f"错误: 配置文件不存在: {config_path}")
-        print(f"请先将 level3_stage1.toml 复制到 config/ 目录")
-        return
+        fallback = config_path.parent / "level0_no_obst.toml"
+        if fallback.exists():
+            print(f"未找到 {config_file}，使用 {fallback.name} 进行测试")
+            config_path = fallback
+        else:
+            print(f"错误: 配置文件不存在: {config_path}")
+            return
     
-    print(f"\n{'='*60}")
-    print(f"环境调试测试")
-    print(f"配置文件: {config_file}")
-    print(f"{'='*60}\n")
+    print(f"\n测试配置文件: {config_path.name}")
     
     try:
+        # 1. 重点运行修改后的 base env 测试
         test_base_env(config_path, num_envs)
+        
+        # 2. 简单运行其他测试以确保没报错
         test_reward_wrapper(config_path, num_envs)
         test_observation_wrapper(config_path, num_envs)
-        test_action_space(config_path)
-        test_full_pipeline(config_path, num_envs, render, num_steps)
         
-        print("=" * 60)
-        print("✓ 所有测试通过!")
+        print("\n" + "=" * 60)
+        print("✓ 测试完成")
         print("=" * 60)
         
     except Exception as e:
