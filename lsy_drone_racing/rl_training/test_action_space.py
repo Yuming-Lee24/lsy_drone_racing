@@ -22,11 +22,6 @@ env = VecDroneRaceEnv(
     seed=42,
     device="cpu"
 )
-env = NormalizeActions(env)
-print("\n" + "="*50)
-print(f"当前 Control Mode: {config.env.control_mode}")
-print("="*50)
-
 # 打印动作空间详情
 low = env.single_action_space.low
 high = env.single_action_space.high
@@ -34,6 +29,10 @@ high = env.single_action_space.high
 print(f"Action Space Shape: {env.single_action_space.shape}")
 print(f"Action Low:  {low}")
 print(f"Action High: {high}")
+
+
+env = NormalizeActions(env)
+
 
 print("\n分析:")
 for i in range(4):
