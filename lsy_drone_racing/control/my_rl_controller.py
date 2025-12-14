@@ -383,7 +383,7 @@ class PPORacingController(Controller):
         self.agent = Agent(self.obs_dim, self.action_dim, self.hidden_dim).to(self.device)
         
         root_dir = Path(__file__).resolve().parent.parent
-        model_path = root_dir / "rl_training" / "checkpoints" / "ppo_racing.ckpt"
+        model_path = root_dir / "rl_training" / "checkpoints" / "step_20m_rew_198_12131411_as_0.2_0.8_lv0_obst_free.ckpt"
         
         print(f"[PPORacingController] Loading model from: {model_path}")
         

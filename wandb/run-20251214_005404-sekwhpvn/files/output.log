@@ -1,0 +1,78 @@
+Training on device: cuda | Environment device: gpu
+Config: level2_no_obst.toml
+[make_env] 配置: level2_no_obst.toml, 门数: 4, 障碍物数: 4
+/data/repos/lsy_drone_racing/.pixi/envs/default/lib/python3.13/site-packages/jax/_src/abstract_arrays.py:135: RuntimeWarning: overflow encountered in cast
+  return literals.TypedNdArray(np.asarray(x, dtype), weak_type=False)
+Observation dim: 88, Action dim: 4
+训练开始。按 Ctrl+C 可安全停止并保存到: /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/checkpoints/best_model.ckpt
+Iter 1/2441 | Steps: 0.01M/20.00M
+  [Perf] Avg Rew: -204.94
+  [Loss] Val: 417.6993 | Pol: -0.0117 | Ent: 2.1675 | KL: 0.0081
+  [Time] 13.59s | SPS: 602
+--------------------------------------------------
+Iter 10/2441 | Steps: 0.08M/20.00M
+  [Perf] Avg Rew: -99.27
+  [Loss] Val: 71.1327 | Pol: -0.0126 | Ent: 2.0162 | KL: 0.0072
+  [Time] 12.10s | SPS: 676
+--------------------------------------------------
+Iter 20/2441 | Steps: 0.16M/20.00M
+  [Perf] Avg Rew: -77.09
+  [Loss] Val: 34.3558 | Pol: -0.0089 | Ent: 1.8655 | KL: 0.0101
+  [Time] 14.30s | SPS: 573
+--------------------------------------------------
+  [★] 新纪录！最佳模型已保存 (Rew: -77.09)
+Iter 30/2441 | Steps: 0.25M/20.00M
+  [Perf] Avg Rew: -65.02
+  [Loss] Val: 17.5674 | Pol: -0.0064 | Ent: 1.7715 | KL: 0.0069
+  [Time] 17.39s | SPS: 471
+--------------------------------------------------
+  [★] 新纪录！最佳模型已保存 (Rew: -65.02)
+Iter 40/2441 | Steps: 0.33M/20.00M
+  [Perf] Avg Rew: -68.12
+  [Loss] Val: 17.2251 | Pol: -0.0083 | Ent: 1.7118 | KL: 0.0155
+  [Time] 13.84s | SPS: 592
+--------------------------------------------------
+Iter 50/2441 | Steps: 0.41M/20.00M
+  [Perf] Avg Rew: -51.35
+  [Loss] Val: 13.7368 | Pol: -0.0060 | Ent: 1.6725 | KL: 0.0056
+  [Time] 18.08s | SPS: 452
+--------------------------------------------------
+  [★] 新纪录！最佳模型已保存 (Rew: -51.35)
+Iter 60/2441 | Steps: 0.49M/20.00M
+  [Perf] Avg Rew: -51.21
+  [Loss] Val: 11.3257 | Pol: -0.0025 | Ent: 1.6512 | KL: 0.0059
+  [Time] 16.08s | SPS: 509
+--------------------------------------------------
+  [★] 新纪录！最佳模型已保存 (Rew: -51.21)
+Iter 70/2441 | Steps: 0.57M/20.00M
+  [Perf] Avg Rew: -43.32
+  [Loss] Val: 14.1478 | Pol: -0.0011 | Ent: 1.6238 | KL: 0.0047
+  [Time] 19.88s | SPS: 412
+--------------------------------------------------
+  [★] 新纪录！最佳模型已保存 (Rew: -43.32)
+Iter 80/2441 | Steps: 0.66M/20.00M
+  [Perf] Avg Rew: -46.13
+  [Loss] Val: 16.8150 | Pol: -0.0079 | Ent: 1.5972 | KL: 0.0030
+  [Time] 23.70s | SPS: 345
+--------------------------------------------------
+Iter 90/2441 | Steps: 0.74M/20.00M
+  [Perf] Avg Rew: -44.72
+  [Loss] Val: 37.8393 | Pol: -0.0073 | Ent: 1.5732 | KL: 0.0056
+  [Time] 22.02s | SPS: 371
+--------------------------------------------------
+Iter 100/2441 | Steps: 0.82M/20.00M
+  [Perf] Avg Rew: -41.23
+  [Loss] Val: 18.3204 | Pol: -0.0043 | Ent: 1.5431 | KL: 0.0045
+  [Time] 27.24s | SPS: 300
+--------------------------------------------------
+  [★] 新纪录！最佳模型已保存 (Rew: -41.23)
+Exception ignored in: <function _xla_gc_callback at 0x7aafc7741260>
+Traceback (most recent call last):
+  File "/data/repos/lsy_drone_racing/.pixi/envs/default/lib/python3.13/site-packages/jax/_src/lib/__init__.py", line 129, in _xla_gc_callback
+    def _xla_gc_callback(*args):
+KeyboardInterrupt:
+
+
+[警报] 用户手动停止训练 (Ctrl+C)！
+  [安全] 模型已紧急保存到: /data/repos/lsy_drone_racing/lsy_drone_racing/rl_training/checkpoints/best_model.ckpt
+正在关闭环境...

@@ -79,7 +79,7 @@ class Args:
     """WandB 团队/用户名"""
     
 # ---------- 环境配置 ----------
-    config_file: str = "level0_no_obst.toml" # 确保是用无障碍的配置
+    config_file: str = "level0_no_obst.toml" 
     
     # [关键修改 1] 并行环境数
     # 稍微降低环境数，把内存留给更长的 num_steps
@@ -89,7 +89,7 @@ class Args:
     
     # [关键修改 2] 训练总量
     # 竞速需要精细打磨轨迹，通常需要较多步数
-    total_timesteps: int = 5_000_000  
+    total_timesteps: int = 20_000_000  
     
     # [关键修改 3] 学习率
     # 3e-4 是黄金标准。开启退火(anneal_lr)非常重要，
@@ -730,7 +730,7 @@ def evaluate_ppo(
                 # ====================================================
                 # if steps == 0: # 只打印第一步
                 raw_act_eval = action[0].cpu().numpy()
-                print(f"\n[VS] Eval Raw Output: {raw_act_eval}")
+                # print(f"\n[VS] Eval Raw Output: {raw_act_eval}")
                     # print(f"[VS] Eval Obs Sum  : {obs.sum().item():.5f}") # 双重确认输入校验和
                 # ====================================================
                 # if steps == 0:
@@ -872,7 +872,7 @@ def main(
     args = Args.create(**kwargs)
     
     # 路径设置
-    model_path = Path(__file__).parent /"checkpoints" / "ppo_racing.ckpt"
+    model_path = Path(__file__).parent /"checkpoints" / "best_model.ckpt"
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     jax_device = args.jax_device
     

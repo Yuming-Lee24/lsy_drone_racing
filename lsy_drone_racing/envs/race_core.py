@@ -155,6 +155,8 @@ def build_action_space(control_mode: Literal["state", "attitude"], drone_model: 
         params = ForceTorqueParams.load(drone_model)
         thrust_min, thrust_max = params.thrust_min * 4, params.thrust_max * 4
         return spaces.Box(
+            # np.array([-np.pi / 2, -np.pi / 2, -np.pi / 2, 0.2], dtype=np.float32),
+            # np.array([np.pi / 2, np.pi / 2, np.pi / 2, 0.8], dtype=np.float32),
             np.array([-np.pi / 2, -np.pi / 2, -np.pi / 2, thrust_min], dtype=np.float32),
             np.array([np.pi / 2, np.pi / 2, np.pi / 2, thrust_max], dtype=np.float32),
         )
