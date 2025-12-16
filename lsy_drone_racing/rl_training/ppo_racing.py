@@ -407,7 +407,13 @@ def train_ppo(
     set_seeds(args.seed)
     print(f"Training on device: {device} | Environment device: {jax_device}")
     print(f"Config: {args.config_file}")
-    
+
+        # ========== 保存配置 ==========
+    config_save_path = model_path.parent.parent / "train_args" / "train_args.yaml"
+    with open(config_save_path, 'w') as f:
+        yaml.dump(vars(args), f, default_flow_style=False)
+    print(f"Config saved to {config_save_path}")
+
     # ========== 创建环境 ==========
     envs = make_env(args, jax_device=jax_device, torch_device=device)
     
@@ -431,6 +437,7 @@ def train_ppo(
     best_reward = -float('inf')
     best_model_path = model_path.parent / "best_model.ckpt"
     print(f"训练开始。按 Ctrl+C 可安全停止并保存到: {model_path}")
+    print(f"best model saved under: {best_model_path}")
     # ===========================================================
     
     # ========== 开始训练 ==========
