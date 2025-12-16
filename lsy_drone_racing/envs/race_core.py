@@ -32,7 +32,8 @@ import mujoco
 import numpy as np
 from crazyflow.sim import Sim
 from crazyflow.sim.sim import use_box_collision
-from drone_controllers.mellinger.params import ForceTorqueParams
+
+# from crazyflow.sim.symbolic import symbolic_attitude
 from flax.struct import dataclass
 from gymnasium import spaces
 
@@ -138,13 +139,12 @@ class EnvData:
         )
 
 
-def build_action_space(control_mode: Literal["state", "attitude"], drone_model: str) -> spaces.Box:
+def build_action_space(control_mode: Literal["state", "attitude"]) -> spaces.Box:
     """Create the action space for the environment.
 
     Args:
         control_mode: The control mode to use. Either "state" for full-state control
             or "attitude" for attitude control.
-        drone_model: Drone model of the environment.
 
     Returns:
         A Box space representing the action space for the specified control mode.
@@ -152,12 +152,9 @@ def build_action_space(control_mode: Literal["state", "attitude"], drone_model: 
     if control_mode == "state":
         return spaces.Box(low=-1, high=1, shape=(13,))
     elif control_mode == "attitude":
-        params = ForceTorqueParams.load(drone_model)
-        thrust_min, thrust_max = params.thrust_min * 4, params.thrust_max * 4
-        return spaces.Box(
-            np.array([-np.pi / 2, -np.pi / 2, -np.pi / 2, thrust_min], dtype=np.float32),
-            np.array([np.pi / 2, np.pi / 2, np.pi / 2, thrust_max], dtype=np.float32),
-        )
+        high = np.array([np.pi / 2, np.pi/ 2, np.pi/ 2, 0.8], dtype=np.float32)
+        low = np.array([-np.pi/ 2, -np.pi/ 2, -np.pi/ 2, 0.2], dtype=np.float32)
+        return spaces.Box(low, high)
     else:
         raise ValueError(f"Invalid control mode: {control_mode}")
 
@@ -299,7 +296,7 @@ class RaceCoreEnv:
         self.autoreset = True  # Can be overridden by subclasses
         self.device = jax.devices(device)[0]
         self.sensor_range = sensor_range
-        self.track = track
+        track = generate_random_track(track, seed) if track.randomize else track
         self.gates, self.obstacles, self.drone = load_track(track)
         specs = {} if disturbances is None else disturbances
         self.disturbances = {mode: rng_spec2fn(spec) for mode, spec in specs.items()}
@@ -329,7 +326,14 @@ class RaceCoreEnv:
             pos_limit_high=[3, 3, 2.5],
             device=self.device,
         )
-        self.randomize_track = build_track_randomization_fn(randomizations, gate_ids, obstacle_ids)
+        self.randomize_track = build_track_randomization_fn(
+            randomizations,
+            gate_ids,
+            obstacle_ids,
+            self.gates["nominal_pos"],
+            self.gates["nominal_quat"],
+            self.obstacles["nominal_pos"],
+        )
 
     def _reset(
         self, *, seed: int | None = None, options: dict | None = None, mask: Array | None = None
@@ -350,38 +354,14 @@ class RaceCoreEnv:
         # Randomization of the drone is compiled into the sim reset pipeline, so we don't need to
         # explicitly do it here
         self.sim.reset(mask=mask)
-        key, subkey, subkey2 = jax.random.split(self.sim.data.core.rng_key, 3)
-        # Generate random track
-        track = generate_random_track(self.track, subkey2) if self.track.randomize else self.track
-        self.gates, self.obstacles, self.drone = load_track(track)
+        key, subkey = jax.random.split(self.sim.data.core.rng_key)
         # Randomize the track
         self.sim.data = self.sim.data.replace(core=self.sim.data.core.replace(rng_key=key))
-
-        @jax.jit
-        def update_sim_data(
-            data: SimData, mjx_data: Data, key: jax.random.PRNGKey
-        ) -> tuple[SimData, Data]:
-            # Randomized drone pos
-            pos = data.states.pos.at[...].set(self.drone["pos"])
-            data = data.replace(states=data.states.replace(pos=pos))
-
-            mjx_data = self.randomize_track(
-                mjx_data,
-                mask,
-                self.gates["nominal_pos"],
-                self.gates["nominal_quat"],
-                self.obstacles["nominal_pos"],
-                key,
-            )
-            return data, mjx_data
-
-        self.sim.data, self.sim.mjx_data = update_sim_data(self.sim.data, self.sim.mjx_data, subkey)
-
+        self.sim.mjx_data = self.randomize_track(self.sim.mjx_data, mask, subkey)
         # Reset the environment data
         self.data = self._reset_env_data(
             self.data, self.sim.data.states.pos, self.sim.mjx_data.mocap_pos, mask
         )
-
         return self.obs(), self.info()
 
     def _step(self, action: Array) -> tuple[dict[str, Array], float, bool, bool, dict]:
@@ -744,7 +724,12 @@ def build_reset_fn(randomizations: dict) -> Callable[[SimData, Array], SimData]:
 
 
 def build_track_randomization_fn(
-    randomizations: dict, gate_mocap_ids: list[int], obstacle_mocap_ids: list[int]
+    randomizations: dict,
+    gate_mocap_ids: list[int],
+    obstacle_mocap_ids: list[int],
+    nominal_gate_pos: Array,
+    nominal_gate_quat: Array,
+    nominal_obstacle_pos: Array,
 ) -> Callable[[Data, Array, jax.random.PRNGKey], Data]:
     """Build the track randomization function for the simulation."""
     randomization_fns = ()
@@ -761,17 +746,10 @@ def build_track_randomization_fn(
             case _:
                 raise ValueError(f"Invalid target: {target}")
 
-    @jax.jit
-    def track_randomization(
-        data: Data,
-        mask: Array,
-        nominal_gate_pos: Array,
-        nominal_gate_quat: Array,
-        nominal_obstacle_pos: Array,
-        key: jax.random.PRNGKey,
-    ) -> Data:
-        gate_quat = jp.roll(nominal_gate_quat, 1, axis=-1)  # Convert from scipy to MuJoCo order
+    gate_quat = jp.roll(nominal_gate_quat, 1, axis=-1)  # Convert from scipy to MuJoCo order
 
+    @jax.jit
+    def track_randomization(data: Data, mask: Array, key: jax.random.PRNGKey) -> Data:
         # Reset to default track positions first
         data = data.replace(mocap_pos=data.mocap_pos.at[:, gate_mocap_ids].set(nominal_gate_pos))
         data = data.replace(mocap_quat=data.mocap_quat.at[:, gate_mocap_ids].set(gate_quat))

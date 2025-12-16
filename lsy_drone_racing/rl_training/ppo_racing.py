@@ -98,7 +98,6 @@ class Args:
     anneal_lr: bool = True
     
     # [关键修改 4] 视野长度 (Rollout Length)
-    # 原来的 32 太短了！改为 128 或 256。
     # 128 steps @ 50Hz = 2.56秒。
     # 这让 GAE (优势函数) 能更准确地评估当前动作对未来的影响。
     num_steps: int = 128  
@@ -322,14 +321,6 @@ class Agent(nn.Module):
             last_layer.bias[2] = 0.0  # Yaw
             
             # 2. 给推力通道 (3) 加偏置
-            # 我们给 Bias=1.0。
-            # 网络输出经过 Tanh(1.0) ≈ 0.76 (范围 -1~1)。
-            # 经过 NormalizeActions 映射到环境的 [0, 1] 并不是简单的线性，要看 wrapper 实现。
-            # 通常 NormalizeActions 会把网络 [-1, 1] 映射到 [Low, High]。
-            # 如果 Low=0, High=1 (推力)，那么 0.76 对应 0.88 (88% 油门)。
-            # 如果 Low=-3.14, High=3.14 (根据你的打印)，那这有点奇怪，但物理引擎通常只取正值。
-            
-            # 不管怎样，给 Index 3 一个正的 Bias 是起飞的关键！
             last_layer.bias[3] = 1.0
 
         # 动作标准差 (可学习参数)
@@ -715,54 +706,17 @@ def evaluate_ppo(
             done = False
             
             while not done:
-                # if steps == 0:  # 只看第一步，方便对比
-                #     print("\n[DEBUG - Eval] First Observation Vector (前20位):")
-                #     # 这里的 obs 是经过 Wrapper 处理过的完美数据
-                #     print(obs[0, :20].cpu().numpy()) 
-                #     print("[DEBUG - Eval] First Observation Vector (最后20位 - 历史信息):")
-                #     print(obs[0, -20:].cpu().numpy())
-                # 获取动作
-                # 尝试 deterministic=True (训练好的表现) 和 False (带一点随机性)
-                # 如果它不动，你可以临时改成 False 试试
                 action, _, _, _ = agent.get_action_and_value(obs, deterministic=True)
                 # ====================================================
                 # [DEBUG] 打印 eval 环境下的网络原始输出
                 # ====================================================
                 # if steps == 0: # 只打印第一步
-                raw_act_eval = action[0].cpu().numpy()
-                print(f"\n[VS] Eval Raw Output: {raw_act_eval}")
+                #     raw_act_eval = action[0].cpu().numpy()
+                #     print(f"\n[VS] Eval Raw Output: {raw_act_eval}")
                     # print(f"[VS] Eval Obs Sum  : {obs.sum().item():.5f}") # 双重确认输入校验和
-                # ====================================================
-                # if steps == 0:
-                #     print(f"[DEBUG - Eval] Network Output Action (Raw): {action[0].cpu().numpy()}")
-                # ====================================================
-                # [超级调试补丁] 强制悬停模式
-                # ====================================================
-                # 1. 给足油门 (Raw 0.5 => 75% 油门)
-                # action[0, 3] = 0.5  
-                
-                # 2. [关键] 强制姿态水平 (Roll/Pitch/Yaw = 0)
-                # 只有把这两个设为 0，推力才能全部用于对抗重力！
-                # action[0, 0] = 0.0  # Roll
-                # action[0, 1] = 0.0  # Pitch (修正之前的 -0.93)
-                # action[0, 2] = 0.0  # Yaw   (修正之前的 -0.99)
                 
                 # 确保截断
                 action = torch.clamp(action, -1.0, 1.0)
-                # ====================================================
-                # --- [调试打印] ---
-                # 打印前 5 步和最后 5 步，或者每 50 步打印一次
-                # if steps < 5 or steps % 50 == 0:
-                #     raw_act = action[0].cpu().numpy()
-                #     # 获取当前高度
-                #     pos_z = obs[0, 0].item() # 假设 0 是 pos_z (如果是58维)
-                #     if obs_dim > 50: # 如果是全观测
-                #          # 根据你的 observation.py，pos 在前 3 位 (如果改回了3D) 或 pos_z 在第 0 位
-                #          pass
-
-                #     print(f"Step {steps:03d} | "
-                #           f"Action(Raw): {raw_act} | " # [-1, 1] 之间的值
-                #           f"Pos_Z: {pos_z:.4f}")
 
                 # 执行动作
                 obs, reward, terminated, truncated, info = eval_env.step(action)
@@ -872,17 +826,19 @@ def main(
     args = Args.create(**kwargs)
     
     # 路径设置
-    model_path = Path(__file__).parent /"checkpoints" / "ppo_racing.ckpt"
+    model_save_path = Path(__file__).parent /"checkpoints" / "ppo_racing.ckpt"
+    model_eval_path = Path(__file__).parent /"checkpoints" / "best_model.ckpt"
+
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     jax_device = args.jax_device
     
     # 训练
     if train:
-        train_ppo(args, model_path, device, jax_device, wandb_enabled)
+        train_ppo(args, model_save_path, device, jax_device, wandb_enabled)
     
     # 评估
     if eval > 0:
-        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_path)
+        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path)
         
         if wandb_enabled and wandb.run is not None:
             wandb.log({
