@@ -22,7 +22,7 @@ env = VecDroneRaceEnv(
     seed=42,
     device="cpu"
 )
-env = NormalizeActions(env)
+# env = NormalizeActions(env)
 print("\n" + "="*50)
 print(f"当前 Control Mode: {config.env.control_mode}")
 print("="*50)
