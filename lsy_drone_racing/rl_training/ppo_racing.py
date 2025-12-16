@@ -48,7 +48,8 @@ from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 # 自定义 Wrapper
 from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
 from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper as BaseRewardWrapper
-from lsy_drone_racing.rl_training.wrappers.reward_racing_lv0 import RacingRewardWrapper as RacingRewardWrapperLv0
+# from lsy_drone_racing.rl_training.wrappers.reward_racing_lv0_smart_align import RacingRewardWrapper as RacingRewardWrapperLv0
+from lsy_drone_racing.rl_training.wrappers.reward_racing_lv0_test import RacingRewardWrapper as RacingRewardWrapperLv0
 
 
 # ============================================================================
@@ -94,7 +95,7 @@ class Args:
     # [关键修改 3] 学习率
     # 3e-4 是黄金标准。开启退火(anneal_lr)非常重要，
     # 可以在训练后期让无人机动作更细腻，不再抖动。
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-4
     anneal_lr: bool = True
     
     # [关键修改 4] 视野长度 (Rollout Length)
@@ -129,14 +130,14 @@ class Args:
     """隐藏层维度"""
     
 # ---------- 奖励系数 (适配 RacingRewardWrapperLv0) ----------
-    coef_progress: float = 20.0   # [修改] 差分奖励需要较大的系数
-    coef_gate: float = 10.0       # [保持]
+    coef_progress: float = 10.0   # [修改] 差分奖励需要较大的系数
+    coef_gate: float = 50.0       # [保持]
     coef_finish: float = 50.0     # [新增] 完赛大奖
     coef_time: float = 0.05       # [新增] 时间惩罚
-    coef_align: float = 0.5       # [保持]
-    coef_collision: float = 10.0  # [修改] 稍微加大碰撞惩罚
-    coef_smooth: float = 0.1      # [保持]
-    coef_spin: float = 0.1        # [修改] 稍微加大防震荡
+    coef_align: float = 0.01       # [保持]
+    coef_collision: float = 50.0  # [修改] 稍微加大碰撞惩罚
+    coef_smooth: float = 0.005     # [保持]
+    coef_spin: float = 0.0        # [修改] 稍微加大防震荡
     
     n_history: int = 2
     """状态堆叠数量"""
@@ -419,7 +420,8 @@ def train_ppo(
     
     # ========== 创建环境 ==========
     envs = make_env(args, jax_device=jax_device, torch_device=device)
-    
+    reward_wrapper = envs.env.env  # JaxToTorch -> ObsWrapper -> RewardWrapper
+
     obs_dim = envs.single_observation_space.shape[0]  # 58
     action_dim = envs.single_action_space.shape[0]    # 4
     print(f"Observation dim: {obs_dim}, Action dim: {action_dim}")
@@ -488,6 +490,8 @@ def train_ppo(
                 next_done = (terminations | truncations).float().to(device)
                 
                 if next_done.any():
+                    # print(f"Reset reward: {rewards[step][next_done.bool()].cpu().numpy()}")
+
                     finished_rewards = sum_rewards[next_done.bool()]
                     for r in finished_rewards:
                         sum_rewards_hist.append(r.item())
@@ -611,7 +615,18 @@ def train_ppo(
                 # [修改 C] 打印更详细的调试信息
                 # 1. 任务表现: 奖励和存活时长
                 print(f"  [Perf] Avg Rew: {avg_reward:.2f}")
-                
+
+                stats = reward_wrapper.get_rollout_stats()
+                if stats:
+                    print(f"  [Reward] ({stats['n_episodes']} eps) "
+                            f"prog={stats['progress']:.2f}, "
+                            f"gate={stats['gate']:.2f}, "
+                            f"align={stats['align']:.2f}, "
+                            f"time={stats['time']:.2f}, "
+                            f"ground={stats['ground']:.2f}, "
+                            f"collision={stats['collision']:.2f}, "
+                            f"smooth={stats['smooth']:.2f}, "
+                            f"spin={stats['spin']:.2f}")
                 # 2. 网络健康度: 
                 #    Val (Critic误差): 越低越好
                 #    Ent (策略熵): 代表探索欲望。如果迅速掉到 0 说明过早收敛(学傻了)
@@ -767,7 +782,14 @@ def evaluate_ppo(
                 # 执行动作
                 obs, reward, terminated, truncated, info = eval_env.step(action)
                 obs = obs.to(device)
-                
+
+                reward_wrapper = eval_env.env.env
+                print(f"Step {steps}:")
+                print(f"  curr_dist: {reward_wrapper._curr_dist}")
+                print(f"  last_dist: {reward_wrapper._last_dist_to_gate}")
+                print(f"  diff: {reward_wrapper._last_dist_to_gate - reward_wrapper._curr_dist}")
+                print(f"  last_target_gate: {reward_wrapper._last_target_gate}")
+                print(f"  reward: {reward[0].item():.4f}")
                 if render:
                     eval_env.unwrapped.render()
                     # 稍微睡一下，不然画面太快看不清
@@ -872,17 +894,19 @@ def main(
     args = Args.create(**kwargs)
     
     # 路径设置
-    model_path = Path(__file__).parent /"checkpoints" / "best_model.ckpt"
+    model__save_path = Path(__file__).parent /"checkpoints" / "ppo_racing.ckpt"
+    model__eval_path = Path(__file__).parent /"checkpoints" / "best_model.ckpt"
+  
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     jax_device = args.jax_device
     
     # 训练
     if train:
-        train_ppo(args, model_path, device, jax_device, wandb_enabled)
+        train_ppo(args, model__save_path, device, jax_device, wandb_enabled)
     
     # 评估
     if eval > 0:
-        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_path)
+        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model__eval_path)
         
         if wandb_enabled and wandb.run is not None:
             wandb.log({

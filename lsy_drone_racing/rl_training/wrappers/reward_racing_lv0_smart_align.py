@@ -60,7 +60,21 @@ class RacingRewardWrapper(VectorWrapper):
         self._last_dist_to_gate = np.zeros(self.num_envs, dtype=np.float32)
         self._last_action = np.zeros((self.num_envs, 4), dtype=np.float32)
         self._last_target_gate = np.zeros(self.num_envs, dtype=np.int32)
-    
+        # 新增：累积奖励追踪
+        self._ep_rewards = {
+            "progress": np.zeros(self.num_envs, dtype=np.float32),
+            "gate": np.zeros(self.num_envs, dtype=np.float32),
+            "finish": np.zeros(self.num_envs, dtype=np.float32),
+            "align": np.zeros(self.num_envs, dtype=np.float32),
+            "time": np.zeros(self.num_envs, dtype=np.float32),
+            "ground": np.zeros(self.num_envs, dtype=np.float32),
+            "collision": np.zeros(self.num_envs, dtype=np.float32),
+            "smooth": np.zeros(self.num_envs, dtype=np.float32),
+            "spin": np.zeros(self.num_envs, dtype=np.float32),
+            "total": np.zeros(self.num_envs, dtype=np.float32),
+        }
+        self._ep_steps = np.zeros(self.num_envs, dtype=np.int32)
+
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         
@@ -172,7 +186,42 @@ class RacingRewardWrapper(VectorWrapper):
             - p_spin
             # - p_angle
         )
+    # 累积各组件
+        self._ep_rewards["progress"] += r_progress
+        self._ep_rewards["gate"] += r_gate
+        self._ep_rewards["finish"] += r_finish
+        self._ep_rewards["align"] += r_align
+        self._ep_rewards["time"] -= p_time
+        self._ep_rewards["ground"] -= p_ground
+        self._ep_rewards["collision"] -= p_collision
+        self._ep_rewards["smooth"] -= p_smooth
+        self._ep_rewards["spin"] -= p_spin
+        self._ep_rewards["total"] += reward
+        self._ep_steps += 1
         
+        # Episode 结束时打印并重置
+        done_mask = terminated | truncated
+        if np.any(done_mask):
+            idx = np.where(done_mask)[0][0]  # 取第一个结束的环境
+            print(f"\n[Episode结束] 步数={self._ep_steps[idx]}"
+                f"\n  progress: {self._ep_rewards['progress'][idx]:.2f}"
+                f"\n  gate:     {self._ep_rewards['gate'][idx]:.2f}"
+                f"\n  finish:   {self._ep_rewards['finish'][idx]:.2f}"
+                f"\n  align:    {self._ep_rewards['align'][idx]:.2f}"
+                f"\n  time:     {self._ep_rewards['time'][idx]:.2f}"
+                f"\n  ground:   {self._ep_rewards['ground'][idx]:.2f}"
+                f"\n  collision:{self._ep_rewards['collision'][idx]:.2f}"
+                f"\n  smooth:   {self._ep_rewards['smooth'][idx]:.2f}"
+                f"\n  spin:     {self._ep_rewards['spin'][idx]:.2f}"
+                f"\n  ----------------------"
+                f"\n  TOTAL:    {self._ep_rewards['total'][idx]:.2f}"
+            )
+            
+            # 重置结束环境的累积值
+            for key in self._ep_rewards:
+                self._ep_rewards[key][done_mask] = 0.0
+            self._ep_steps[done_mask] = 0
+                
         return reward.astype(np.float32)
 
     def _compute_dist_to_gate(self, obs: dict) -> NDArray:
@@ -260,7 +309,7 @@ class RacingRewardWrapper(VectorWrapper):
         
         # 6. 后处理
         # 缩放系数: 建议 0.5 左右，防止高速时奖励过大
-        align_reward *= 0.5
+        align_reward *= 0.1
         
         # 完赛的不给奖励 (或者保持为0)
         align_reward = np.where(valid_mask, align_reward, 0.0)
