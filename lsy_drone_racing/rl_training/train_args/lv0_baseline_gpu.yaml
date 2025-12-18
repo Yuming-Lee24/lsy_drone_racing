@@ -1,0 +1,54 @@
+anneal_lr: true
+
+# [Auto Calc] Batch Size = num_envs * num_steps
+# 1024 * 256 = 262,144
+# Reducing this by half relieves about 2-4GB of VRAM pressure.
+batch_size: 262144
+
+clip_coef: 0.2
+clip_vloss: true
+coef_align: 0.5
+coef_collision: 10.0
+coef_finish: 100.0
+coef_gate: 10.0
+coef_progress: 20.0
+coef_smooth: 0.1
+coef_spin: 0.1
+coef_time: 0.05
+config_file: level0_no_obst.toml
+cuda: true
+ent_coef: 0.01
+gae_lambda: 0.95
+gamma: 0.99
+hidden_dim: 256
+jax_device: gpu
+learning_rate: 0.0003
+max_grad_norm: 0.5
+
+# [Auto Calc] batch_size / num_minibatches
+# 262144 / 4 = 65536
+minibatch_size: 65536
+
+n_history: 2
+norm_adv: true
+
+# [CRITICAL CHANGE] Reduced from 2048 to 1024 to fix OOM error
+num_envs: 1024
+
+# [Auto Calc] total_timesteps / batch_size
+# 200M / 262k = ~763 iterations
+num_iterations: 763
+
+num_minibatches: 4
+
+# [Keep] 256 Steps (5.12s) to cover the full race duration
+num_steps: 256
+
+seed: 42
+target_kl: null
+torch_deterministic: true
+total_timesteps: 200000000
+update_epochs: 10
+vf_coef: 0.5
+wandb_entity: null
+wandb_project_name: DroneRacing-PPO
