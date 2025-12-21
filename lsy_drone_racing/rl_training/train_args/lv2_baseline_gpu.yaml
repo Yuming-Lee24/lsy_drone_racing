@@ -114,7 +114,7 @@ coef_spin:
 coef_time:
     value: 0.05
 config_file:
-    value: level0_no_obst.toml
+    value: level2_no_obst.toml
 cuda:
     value: true
 ent_coef:

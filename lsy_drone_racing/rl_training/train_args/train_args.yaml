@@ -10,7 +10,7 @@ coef_progress: 20
 coef_smooth: 0.1
 coef_spin: 0.1
 coef_time: 0.05
-config_file: level0_no_obst.toml
+config_file: level2_no_obst.toml
 cuda: true
 ent_coef: 0.007250811183323254
 gae_lambda: 0.95

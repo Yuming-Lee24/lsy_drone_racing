@@ -79,7 +79,7 @@ class Args:
     """WandB 团队/用户名"""
     
 # ---------- 环境配置 ----------
-    config_file: str = "level0_no_obst.toml" # 确保是用无障碍的配置
+    config_file: str = "level2_no_obst.toml" # 确保是用无障碍的配置
     
     # [关键修改 1] 并行环境数
     # 稍微降低环境数，把内存留给更长的 num_steps
@@ -356,7 +356,14 @@ class Agent(nn.Module):
         action_mean = self.actor_mean(x)
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
-        
+        # ============================================================
+        # [关键修改] 限制 Log Std 的下界，防止熵坍缩
+        # ============================================================
+        # min=-2.0 对应 std ≈ 0.135。这保证了无论训练多久，
+        # 智能体始终保留至少 0.135 的探索噪声，不会变成绝对的死记硬背。
+        # max=2.0 防止方差过大导致动作完全随机。
+        # action_logstd = torch.clamp(action_logstd, min=-2.0, max=2.0)
+        # ============================================================
         probs = Normal(action_mean, action_std)
         
         if action is None:
@@ -665,42 +672,42 @@ def evaluate_ppo(
     n_eval: int,
     model_path: Path,
     render: bool = True,
+    success_threshold: float = 200.0,  # 新增：成功阈值
 ) -> tuple[list[float], list[int]]:
-    """调试版评估函数：打印动作和状态详情。"""
+    """Evaluation function with success rate tracking."""
     set_seeds(args.seed)
-    # 强制使用 CPU 进行评估，避免 tensor device 错误
+    # Force CPU for evaluation to avoid tensor device errors
     device = torch.device("cpu")
     
-    print(f"\n[Eval] 加载模型: {model_path}")
-    print(f"[Eval] 渲染模式: {render}")
+    print(f"\n[Eval] Loading model: {model_path}")
+    print(f"[Eval] Render mode: {render}")
+    print(f"[Eval] Success threshold: Reward >= {success_threshold}")
 
-    # 1. 创建单环境 (num_envs=1)
-    # 注意：必须确保这里使用的 config 和训练时一致
+    # 1. Create single environment (num_envs=1)
     args_eval = Args.create(**{**vars(args), "num_envs": 1})
     eval_env = make_env(args_eval, jax_device="cpu", torch_device=device)
     
     obs_dim = eval_env.single_observation_space.shape[0]
     action_dim = eval_env.single_action_space.shape[0]
     
-    # 2. 加载模型
+    # 2. Load model
     agent = Agent(obs_dim, action_dim, hidden_dim=args.hidden_dim).to(device)
     try:
-        # 尝试加载权重
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-        # 兼容只保存了 state_dict 或保存了整个 dict 的情况
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             agent.load_state_dict(checkpoint["model_state_dict"])
         else:
             agent.load_state_dict(checkpoint)
-        print("[Eval] 模型加载成功！")
+        print("[Eval] Model loaded successfully!")
     except Exception as e:
-        print(f"[Eval] 模型加载失败: {e}")
+        print(f"[Eval] Model loading failed: {e}")
         return [], []
 
     agent.eval()
     
     episode_rewards = []
     episode_lengths = []
+    successes = []  # Track success for each episode
     
     with torch.no_grad():
         for episode in range(n_eval):
@@ -714,30 +721,20 @@ def evaluate_ppo(
             
             while not done:
                 action, _, _, _ = agent.get_action_and_value(obs, deterministic=True)
-                # ====================================================
-                # [DEBUG] 打印 eval 环境下的网络原始输出
-                # ====================================================
-                # if steps == 0: # 只打印第一步
-                #     raw_act_eval = action[0].cpu().numpy()
-                #     print(f"\n[VS] Eval Raw Output: {raw_act_eval}")
-                    # print(f"[VS] Eval Obs Sum  : {obs.sum().item():.5f}") # 双重确认输入校验和
-                
-                # 确保截断
                 action = torch.clamp(action, -1.0, 1.0)
 
-                # 执行动作
+                # Execute action
                 obs, reward, terminated, truncated, info = eval_env.step(action)
                 obs = obs.to(device)
                 
                 if render:
                     eval_env.unwrapped.render()
-                    # 稍微睡一下，不然画面太快看不清
                     time.sleep(0.02) 
                 
                 episode_reward += reward[0].item()
                 steps += 1
                 
-                # 检查是否撞毁
+                # Check termination
                 term = terminated[0].item()
                 trunc = truncated[0].item()
                 done = term or trunc
@@ -745,20 +742,32 @@ def evaluate_ppo(
                 if done:
                     print(f"!!! Episode End at Step {steps} !!!")
                     print(f"Reason: Terminated={term}, Truncated={trunc}")
-                    # 检查 info 里有没有碰撞信息
-                    if "final_info" in info:
-                        final_info = info["final_info"][0]
-                        if final_info:
-                            print(f"Final Info: {final_info}")
+            
+            # Success based on reward threshold
+            success = (episode_reward >= success_threshold)
             
             episode_rewards.append(episode_reward)
             episode_lengths.append(steps)
-            print(f"Episode {episode + 1}: Reward = {episode_reward:.2f}, Length = {steps}")
+            successes.append(success)
+            
+            status = "✓ SUCCESS" if success else "✗ FAILED"
+            print(f"Episode {episode + 1}: Reward = {episode_reward:.2f}, Length = {steps} - {status}")
     
-    print(f"\nAverage Reward: {np.mean(episode_rewards):.2f}")
+    # Calculate statistics
+    num_successes = sum(successes)
+    success_rate = (num_successes / n_eval) * 100
+    
+    print("\n" + "="*60)
+    print(f"Success: {num_successes}/{n_eval}, Success Rate: {success_rate:.1f}%")
+    print(f"Average Reward: {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
+    print(f"Average Episode Length: {np.mean(episode_lengths):.1f}")
+    if num_successes > 0:
+        successful_rewards = [r for r, s in zip(episode_rewards, successes) if s]
+        print(f"Average Reward (Successful): {np.mean(successful_rewards):.2f}")
+    print("="*60)
+    
     eval_env.close()
     return episode_rewards, episode_lengths
-
 # ============================================================================
 # 主函数
 # ============================================================================

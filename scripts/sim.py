@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
-
+import time
 import fire
 import gymnasium
 import jax.numpy as jp
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def simulate(
-    config: str = "level0_no_obst.toml",
+    config: str = "level2_no_obst.toml",
     controller: str | None = None,
     n_runs: int = 1,
     render: bool | None = None,
@@ -78,7 +78,7 @@ def simulate(
         obs, info = env.reset()
         controller: Controller = controller_cls(obs, info, config)
         i = 0
-        fps = 60
+        fps = 30
 
         while True:
             curr_time = i / config.env.freq
@@ -102,6 +102,7 @@ def simulate(
                 if ((i * fps) % config.env.freq) < fps:
                     # draw_line(env,controller.get_trajectory_waypoints())
                     env.render()
+                    time.sleep(0.05) 
             i += 1
 
         controller.episode_callback()  # Update the controller internal state and models.
