@@ -92,7 +92,6 @@ def simulate(
 
             obs, reward, terminated, truncated, info = env.step(action)
             # Update the controller internal state and models.
-            print(terminated)
             controller_finished = controller.step_callback(
                 action, obs, reward, terminated, truncated, info
             )
