@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def simulate(
-    config: str = "level2_no_obst.toml",
+    config: str = "level1.toml",
     controller: str | None = None,
     n_runs: int = 1,
     render: bool | None = None,
@@ -102,7 +102,7 @@ def simulate(
                 if ((i * fps) % config.env.freq) < fps:
                     # draw_line(env,controller.get_trajectory_waypoints())
                     env.render()
-                    time.sleep(0.02) 
+                    # time.sleep(0.02) 
             i += 1
 
         controller.episode_callback()  # Update the controller internal state and models.

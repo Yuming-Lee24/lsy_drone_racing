@@ -106,15 +106,15 @@ coef_finish:
 coef_gate:
     value: 20
 coef_progress:
-    value: 16
+    value: 50
 coef_smooth:
-    value: 0
+    value: 0.0
 coef_spin:
-    value: 0
+    value: 0.00
 coef_time:
     value: 0.05
 config_file:
-    value: level0_no_obst.toml
+    value: level2_3m_visual_range.toml
 cuda:
     value: true
 ent_coef:
@@ -152,7 +152,7 @@ target_kl:
 torch_deterministic:
     value: true
 total_timesteps:
-    value: 500000000
+    value: 500_000_000
 train:
     value: true
 update_epochs:
@@ -165,3 +165,5 @@ wandb_entity:
     value: null
 wandb_project_name:
     value: DroneRacing-PPO
+stage:
+    value: 2

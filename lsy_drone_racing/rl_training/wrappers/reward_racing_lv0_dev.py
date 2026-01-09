@@ -90,17 +90,31 @@ class RacingRewardWrapper(VectorWrapper):
         return obs, info
     
     def step(self, action):
-        # 转换动作格式
         action_array = np.array(action, dtype=np.float32).reshape(self.num_envs, -1)
-        
-        # 环境步进
         obs, _, terminated, truncated, info = self.env.step(action)
         
-        # 计算新奖励
+        done_mask = terminated | truncated  # 新增
+        if np.any(done_mask):
+            print(f"[DEBUG] Detected autoreset: {done_mask.sum()} envs")
+            print(f"  Env indices: {np.where(done_mask)[0]}")
         reward = self._compute_reward(obs, action_array, terminated, truncated)
         
-        # 更新状态
-        self._update_state(obs, action_array)
+        # 修改：区分autoreset和正常环境
+        if np.any(done_mask):
+            curr_dist = self._compute_dist_to_gate(obs)
+            curr_target = np.array(obs["target_gate"], dtype=np.int32)
+            
+            self._last_dist_to_gate[done_mask] = curr_dist[done_mask]
+            self._last_action[done_mask] = 0.0
+            self._last_target_gate[done_mask] = curr_target[done_mask]
+            
+            active_mask = ~done_mask
+            if np.any(active_mask):
+                self._last_dist_to_gate[active_mask] = curr_dist[active_mask]
+                self._last_action[active_mask] = action_array[active_mask]
+                self._last_target_gate[active_mask] = curr_target[active_mask]
+        else:
+            self._update_state(obs, action_array)
         
         return obs, reward, terminated, truncated, info
     

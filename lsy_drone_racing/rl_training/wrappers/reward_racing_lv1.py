@@ -4,7 +4,7 @@
 1. 使用差分奖励 (Potential-based) 替代绝对距离奖励，防止悬停刷分。
 2. 加入时间惩罚，鼓励快速完赛。
 3. 简化姿态惩罚，允许大机动过弯。
-
+4. 逐渐增加过门奖励
 Reward = (d_t-1 - d_t) * C_prog + R_gate + R_finish - P_time - P_crash - P_smooth
 """
 
@@ -131,15 +131,18 @@ class RacingRewardWrapper(VectorWrapper):
         r_progress = np.where(gate_changed | finished, 0.0, dist_diff)
         r_progress = r_progress * self.coefs["progress"]
         
-        # ========== 2. 过门与完赛奖励 ==========
-        # 检测是否刚过门
+        # ========== 2. 过门与完赛奖励 (修改版) ==========
+        # 检测是否刚过门 (target_gate 增加代表过门)
         passed_gate = (target_gate > self._last_target_gate) & (self._last_target_gate >= 0)
-        
-        # 普通门奖励
-        r_gate = np.where(passed_gate, self.coefs["gate"], 0.0)
-        
-        # 完赛奖励 (刚变成 -1)
+
+        # 计算递增奖励: (门索引 + 1) * 20
+        # 穿过第0个门(索引0)奖励 20，第1个门奖励 40... 以此类推
+        incremental_reward = (self._last_target_gate.astype(np.float32) + 1) * self.coefs["gate"]
+        r_gate = np.where(passed_gate, incremental_reward, 0.0)
+
+        # 完赛奖励 (如果是最后一个门)
         just_finished = (target_gate == -1) & (self._last_target_gate != -1)
+        # 如果第四个门(索引3)是最后一个，完赛奖励可以设为 100 或者更高
         r_finish = np.where(just_finished, self.coefs["finish"], 0.0)
         
         # ========== 3. 时间惩罚 (Step Penalty) ==========
@@ -232,77 +235,34 @@ class RacingRewardWrapper(VectorWrapper):
 
     def _compute_align_reward(self, obs: dict) -> NDArray:
         """
-        计算对齐奖励 (方案1: 速度投影法 + 动态方向引导)
+        简化版对齐奖励：仅鼓励速度与门法向量对齐
         
-        逻辑:
-        1. 远距离 (>1m): 引导飞向门中心。
-        2. 近距离 (<1m) 且在正面 (错误侧): 引导逆向飞 (推回背面)。
-        3. 近距离 (<1m) 且在背面 (正确侧): 引导正向飞 (冲刺穿门)。
-        
-        Math: Reward = dot(Velocity, Target_Direction)
+        让策略自己学习如何穿门，而不是手工设计路径。
         """
-        # 1. 提取基础数据 (支持 Batch)
+        # 1. 提取数据
         vel = np.array(obs["vel"])                      # (N, 3)
-        pos = np.array(obs["pos"])                      # (N, 3)
-        gates_pos = np.array(obs["gates_pos"])          # (N, n_gates, 3)
         gates_quat = np.array(obs["gates_quat"])        # (N, n_gates, 4)
         target_gate_idx = np.array(obs["target_gate"])  # (N,)
         
-        # 处理完赛状态 (防止索引越界)
-        # 如果 target_gate = -1, 我们暂时指向最后一个门，或者直接给0
+        # 处理完赛状态
         valid_mask = (target_gate_idx != -1)
         safe_idx = np.clip(target_gate_idx, 0, self.n_gates - 1)
         
-        # 获取当前目标门的数据
+        # 2. 获取目标门的法向量
         batch_indices = np.arange(self.num_envs)
-        curr_gate_pos = gates_pos[batch_indices, safe_idx]   # (N, 3)
-        curr_gate_quat = gates_quat[batch_indices, safe_idx] # (N, 4)
+        curr_gate_quat = gates_quat[batch_indices, safe_idx]  # (N, 4)
         
-        # 2. 计算门的法向量 (Gate Normal)
-        # 假设局部法向量指向 X 轴 [1, 0, 0] (进门方向)
         gate_rot = Rotation.from_quat(curr_gate_quat)
-        gate_normal = gate_rot.apply(np.array([1.0, 0.0, 0.0])) # (N, 3)
+        gate_normal = gate_rot.apply(np.array([1.0, 0.0, 0.0]))  # (N, 3)
         
-        # 3. 计算无人机相对于门的几何关系
-        vec_to_center = curr_gate_pos - pos             # (N, 3)
-        dist_to_center = np.linalg.norm(vec_to_center, axis=1) # (N,)
+        # 3. 计算速度与门法向量的对齐度
+        # Reward = v · n (速度在正确方向上的投影)
+        align_reward = np.sum(vel * gate_normal, axis=1)
         
-        # 判断在门的哪一侧 (Projection)
-        # dot > 0: 向量与法线同向 (无人机在背面/上游) -> 正确侧
-        # dot < 0: 向量与法线反向 (无人机在正面/下游) -> 错误侧
-        proj = np.sum(vec_to_center * gate_normal, axis=1)
-        is_at_back = proj > 0
-        
-        # 4. 确定目标方向 (Target Direction) - 单位向量
-        # 初始化为指向中心 (适用于 > 1m 的情况)
-        target_dir = vec_to_center / (dist_to_center[:, None] + 1e-6)
-        
-        # --- 进入 1m 核心区逻辑 ---
-        # 创建掩码
-        near_mask = dist_to_center < 1.0
-        
-        # 情况 A: 近距离 & 在背面 (正确侧)
-        # 策略: 沿着法向量正向冲刺 (穿门)
-        # mask: near_mask & is_at_back
-        mask_rush = np.logical_and(near_mask, is_at_back)
-        target_dir[mask_rush] = gate_normal[mask_rush]
-        
-        # 情况 B: 近距离 & 在正面 (错误侧)
-        # 策略: 沿着法向量反向倒飞 (逆向穿回背面)
-        # mask: near_mask & ~is_at_back
-        mask_push_back = np.logical_and(near_mask, ~is_at_back)
-        target_dir[mask_push_back] = -gate_normal[mask_push_back]
-        
-        # 5. 计算奖励 (方案1: 速度投影)
-        # Reward = |v| * cos(theta)
-        # 物理含义: 在目标方向上的分速度
-        align_reward = np.sum(vel * target_dir, axis=1)
-        
-        # 6. 后处理
-        # 缩放系数: 建议 0.5 左右，防止高速时奖励过大
+        # 4. 可选：缩放系数
         align_reward *= 0.5
         
-        # 完赛的不给奖励 (或者保持为0)
+        # 5. 完赛后不给奖励
         align_reward = np.where(valid_mask, align_reward, 0.0)
         
         return align_reward

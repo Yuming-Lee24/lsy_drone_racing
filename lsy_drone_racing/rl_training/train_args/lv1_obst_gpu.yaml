@@ -98,7 +98,7 @@ clip_coef:
 clip_vloss:
     value: true
 coef_align:
-    value: 0.5
+    value: 0
 coef_collision:
     value: 20
 coef_finish:
@@ -106,7 +106,7 @@ coef_finish:
 coef_gate:
     value: 20
 coef_progress:
-    value: 16
+    value: 50
 coef_smooth:
     value: 0
 coef_spin:
@@ -114,7 +114,7 @@ coef_spin:
 coef_time:
     value: 0.05
 config_file:
-    value: level0_no_obst.toml
+    value: level1.toml
 cuda:
     value: true
 ent_coef:
@@ -165,3 +165,5 @@ wandb_entity:
     value: null
 wandb_project_name:
     value: DroneRacing-PPO
+stage:
+    value: 2

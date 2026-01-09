@@ -1,10 +1,10 @@
-# Level 1
+# Level 2
 
-# | Evaluation Scenario | Randomized Inertial Properties | Randomized Obstacles, Gates | Randomized Tracks | Notes    |
-# | :-----------------: | :----------------------------: | :-------------------------: | :---------------: | :------: |
-# | `level1.toml`       | *Yes*                          | *No*                        | *No*              | Adaptive |
+# | Evaluation Scenario | Randomized Inertial Properties | Randomized Obstacles, Gates | Randomized Tracks | Notes                 |
+# | :-----------------: | :----------------------------: | :-------------------------: | :---------------: | :-------------------: |
+# | `level2.toml`       | *Yes*                          | *Yes*                       | *No*              | Learning, re-planning |
 [controller]
-file = "my_rl_controller.py" # Put your controller file name here. Specifying a controller as argument to scripts will override this setting. Controllers are located in `lsy_drone_racing/control/`
+file = "my_state_controller.py" # Put your controller file name here. Specifying a controller as argument to scripts will override this setting. Controllers are located in `lsy_drone_racing/control/`
 
 [deploy]
 ### Settings only relevant for deployment
@@ -16,8 +16,8 @@ check_drone_start_pos = true
 real_track_objects = true
 
 [[deploy.drones]]
-id = 91
-channel = 100
+id = 52
+channel = 80
 drone_model = "cf21B_500"                        # Model of the drone, i.e., cf2x_L250, cf2x_P250, cf2x_T500, cf21B_500. For this course, we use cf21B_500
 
 
@@ -39,7 +39,7 @@ render = false                                       # Enable/disable PyBullet's
 id = "DroneRacing-v0"   # "DroneRacing-v0" for single races, "MultiDroneRacing-v0" for multi-drone races. Each environment also implements a vector-environment for faster training
 seed = "random"         # Either "random" for a random behavior or an integer for reproducibility
 freq = 50               # Frequency of the environment's step function, in Hz
-sensor_range = 0.7      # Range at which the exact location of gates and obstacles become visible to the drone. Objects that are not in the drone's sensor range report their nominal position.
+sensor_range = 2      # Range at which the exact location of gates and obstacles become visible to the drone. Objects that are not in the drone's sensor range report their nominal position.
 control_mode = "attitude"  # Control mode of the environment. Can be either "state" or "attitude"
 
 [env.track]
@@ -116,3 +116,21 @@ fn = "uniform"
 [env.randomizations.drone_inertia.kwargs]
 minval = [-0.000001, -0.000001, -0.000001]
 maxval = [0.000001, 0.000001, 0.000001]
+
+[env.randomizations.gate_pos]
+fn = "uniform"
+[env.randomizations.gate_pos.kwargs]
+minval = [-0.15, -0.15, -0.1]
+maxval = [0.15, 0.15, 0.1]
+
+[env.randomizations.gate_rpy]
+fn = "uniform"
+[env.randomizations.gate_rpy.kwargs]
+minval = [-0.05, -0.1, -0.2]
+maxval = [0.05, 0.1, 0.2]
+
+[env.randomizations.obstacle_pos]
+fn = "uniform"
+[env.randomizations.obstacle_pos.kwargs]
+minval = [-0.15, -0.15, -0.05]
+maxval = [0.15, 0.15, 0.05]

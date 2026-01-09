@@ -46,9 +46,11 @@ from crazyflow.envs.norm_actions_wrapper import NormalizeActions
 from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 
 # 自定义 Wrapper
-from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
+# from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
+from lsy_drone_racing.rl_training.wrappers.observation_dev import RacingObservationWrapper
+
 from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper as BaseRewardWrapper
-from lsy_drone_racing.rl_training.wrappers.reward_racing_lv0 import RacingRewardWrapper as RacingRewardWrapperLv0
+from lsy_drone_racing.rl_training.wrappers.reward_racing_lv1 import RacingRewardWrapper as RacingRewardWrapperLv1
 
 
 # ============================================================================
@@ -83,7 +85,7 @@ class Args:
     
     # [关键修改 1] 并行环境数
     # 稍微降低环境数，把内存留给更长的 num_steps
-    num_envs: int = 64  
+    num_envs: int = 1  
     
     # ---------- PPO 超参数 (竞速调优版) ----------
     
@@ -136,7 +138,7 @@ class Args:
     coef_collision: float = 10.0  # [修改] 稍微加大碰撞惩罚
     coef_smooth: float = 0.1      # [保持]
     coef_spin: float = 0.1        # [修改] 稍微加大防震荡
-    
+    stage: int = 1
     n_history: int = 2
     """状态堆叠数量"""
     
@@ -151,6 +153,7 @@ class Args:
     @staticmethod
     def create(**kwargs: Any) -> "Args":
         """创建并初始化 Args 实例。"""
+        #num_iterations = total_timesteps // batch_size = total_timesteps // (num_envs * num_steps)
         args = Args(**kwargs)
         args.batch_size = int(args.num_envs * args.num_steps)
         args.minibatch_size = int(args.batch_size // args.num_minibatches)
@@ -194,7 +197,7 @@ def make_env(
         VecDroneRaceEnv
         → NormalizeActions (动作归一化 [-1,1] → 实际范围)
         → RacingRewardWrapper (计算 dense reward)
-        → RacingObservationWrapper (观测变换: 字典 → 58D 向量)
+        → RacingObservationWrapper (观测变换: 字典 → 88D 向量)
         → JaxToTorch (JAX Array → PyTorch Tensor)
     
     Args:
@@ -233,7 +236,7 @@ def make_env(
     env = NormalizeActions(env)
     
     # 2. 包装奖励 (需要原始 obs 字典)
-    env = RacingRewardWrapperLv0(  # 确保类名和你 import 的一致
+    env = RacingRewardWrapperLv1(  # 确保类名和你 import 的一致
         env,
         n_gates=n_gates,           # 显式传入 n_gates
         # stage=1,                 # 竞速模式下 stage 通常不再通过参数控制逻辑，可以注释掉或留着占位
@@ -255,7 +258,7 @@ def make_env(
         env,
         n_gates=n_gates,
         n_obstacles=n_obstacles,
-        stage=1,  # Stage 1: 屏蔽障碍物
+        stage=args.stage,  # Stage 1: 屏蔽障碍物
         n_history=args.n_history,  # 新增 状态堆叠数量
     )
     
@@ -281,7 +284,7 @@ class Agent(nn.Module):
         """初始化网络。
         
         Args:
-            obs_dim: 观测维度 (58)
+            obs_dim: 观测维度 (88)
             action_dim: 动作维度 (4)
             hidden_dim: 隐藏层维度
         """
@@ -424,7 +427,7 @@ def train_ppo(
     # ========== 创建环境 ==========
     envs = make_env(args, jax_device=jax_device, torch_device=device)
     
-    obs_dim = envs.single_observation_space.shape[0]  # 58
+    obs_dim = envs.single_observation_space.shape[0]  # 88
     action_dim = envs.single_action_space.shape[0]    # 4
     print(f"Observation dim: {obs_dim}, Action dim: {action_dim}")
     
@@ -671,8 +674,8 @@ def evaluate_ppo(
     args: Args,
     n_eval: int,
     model_path: Path,
-    render: bool = True,
-    success_threshold: float = 200.0,  # 新增：成功阈值
+    render: bool = False,
+    success_threshold: float = 500.0,  # 新增：成功阈值
 ) -> tuple[list[float], list[int]]:
     """Evaluation function with success rate tracking."""
     set_seeds(args.seed)
@@ -740,8 +743,20 @@ def evaluate_ppo(
                 done = term or trunc
                 
                 if done:
-                    print(f"!!! Episode End at Step {steps} !!!")
+                    print(f"\n{'='*40}")
+                    print(f"Episode End at Step {steps}")
                     print(f"Reason: Terminated={term}, Truncated={trunc}")
+                    
+                    reward_wrapper = eval_env.env.env
+                    print(f"\n--- Reward Breakdown ---")
+                    for key, values in reward_wrapper._finished_episodes.items():
+                        if len(values) > 0:
+                            print(f"  {key:12s}: {values[-1]:.4f}")  # 取最后一个完成的 episode
+                    
+                    print(f"\n--- Summary ---")
+                    print(f"  Total (accumulated): {episode_reward:.4f}")
+                    print(f"  Steps: {steps}")
+                    print(f"{'='*40}\n")
             
             # Success based on reward threshold
             success = (episode_reward >= success_threshold)
@@ -854,7 +869,7 @@ def main(
     
     # 评估
     if eval > 0:
-        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path)
+        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, True)
         
         if wandb_enabled and wandb.run is not None:
             wandb.log({

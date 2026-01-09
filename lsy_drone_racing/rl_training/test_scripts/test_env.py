@@ -21,7 +21,7 @@ from crazyflow.envs.norm_actions_wrapper import NormalizeActions
 from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 
 # 自定义 Wrapper
-from lsy_drone_racing.rl_training.wrappers.observation_gate_central_point import RacingObservationWrapper
+from lsy_drone_racing.rl_training.wrappers.observation_dev import RacingObservationWrapper
 from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper
 
 
@@ -153,15 +153,15 @@ def test_observation_wrapper(config_path: str, num_envs: int = 4):
     )
     
     env = NormalizeActions(env)
-    env = RacingRewardWrapper(env, n_gates=n_gates, stage=2)
+    env = RacingRewardWrapper(env, n_gates=n_gates, stage=1)
     
     # 初始化 Observation Wrapper
-    env = RacingObservationWrapper(env, n_gates=n_gates, n_obstacles=n_obstacles, stage=2, n_history=2)
+    env = RacingObservationWrapper(env, n_gates=n_gates, n_obstacles=n_obstacles, stage=1, n_history=2)
     
     obs, info = env.reset(seed=42)
     
     print(f"   Observation Shape: {obs.shape} (Expect: [{num_envs}, 88])")
-    
+    print(obs)
 # ==========================================
     print(f"\n   观测分解 (env 0):")
     
@@ -216,7 +216,7 @@ def main(
     num_envs: int = 4,
 ):
     """运行测试。"""
-    config_path = Path(__file__).parents[2] / "config" / config_file
+    config_path = Path(__file__).parents[3] / "config" / config_file
     
     # 路径回退逻辑
     if not config_path.exists():
