@@ -32,7 +32,7 @@ import mujoco
 import numpy as np
 from crazyflow.sim import Sim
 from crazyflow.sim.sim import use_box_collision
-
+from crazyflow.utils import leaf_replace
 # from crazyflow.sim.symbolic import symbolic_attitude
 from flax.struct import dataclass
 from gymnasium import spaces
@@ -751,11 +751,10 @@ def build_track_randomization_fn(
     @jax.jit
     def track_randomization(data: Data, mask: Array, key: jax.random.PRNGKey) -> Data:
         # Reset to default track positions first
-        data = data.replace(mocap_pos=data.mocap_pos.at[:, gate_mocap_ids].set(nominal_gate_pos))
-        data = data.replace(mocap_quat=data.mocap_quat.at[:, gate_mocap_ids].set(gate_quat))
-        data = data.replace(
-            mocap_pos=data.mocap_pos.at[:, obstacle_mocap_ids].set(nominal_obstacle_pos)
-        )
+        nominal_mocap_pos = data.mocap_pos.at[:, gate_mocap_ids].set(nominal_gate_pos)
+        nominal_mocap_pos = nominal_mocap_pos.at[:, obstacle_mocap_ids].set(nominal_obstacle_pos)
+        nominal_mocap_quat = data.mocap_quat.at[:, gate_mocap_ids].set(gate_quat)
+        data = leaf_replace(data, mask, mocap_pos=nominal_mocap_pos, mocap_quat=nominal_mocap_quat)
         keys = jax.random.split(key, len(randomization_fns))
         for key, randomize_fn in zip(keys, randomization_fns, strict=True):
             data = randomize_fn(data, mask, key)

@@ -112,9 +112,9 @@ coef_smooth:
 coef_spin:
     value: 0.00
 coef_time:
-    value: 0.05
+    value: 0
 config_file:
-    value: level2_3m_visual_range.toml
+    value: level2.toml
 cuda:
     value: true
 ent_coef:

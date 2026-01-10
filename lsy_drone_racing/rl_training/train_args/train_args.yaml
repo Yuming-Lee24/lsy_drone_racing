@@ -9,8 +9,8 @@ coef_gate: 20
 coef_progress: 50
 coef_smooth: 0.0
 coef_spin: 0.0
-coef_time: 0.05
-config_file: level2_3m_visual_range.toml
+coef_time: 0
+config_file: level2.toml
 cuda: true
 ent_coef: 0.005
 gae_lambda: 0.95
