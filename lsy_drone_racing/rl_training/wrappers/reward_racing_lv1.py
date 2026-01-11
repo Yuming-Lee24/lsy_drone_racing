@@ -40,6 +40,7 @@ class RacingRewardWrapper(VectorWrapper):
         coef_smooth: float = 0.1,      # 动作平滑
         coef_spin: float = 0.1,        # 角速度惩罚 (防震荡)
         coef_align: float = 0.5,       # 对齐奖励 (辅助引导)
+        coef_angle: float = 0.02,
     ):
         super().__init__(env)
         
@@ -54,6 +55,7 @@ class RacingRewardWrapper(VectorWrapper):
             "smooth": coef_smooth,
             "spin": coef_spin,
             "align": coef_align,
+            "angle": coef_angle,
         }
         
         # 内部状态
@@ -72,6 +74,7 @@ class RacingRewardWrapper(VectorWrapper):
             "collision": np.zeros(self.num_envs, dtype=np.float32),
             "smooth": np.zeros(self.num_envs, dtype=np.float32),
             "spin": np.zeros(self.num_envs, dtype=np.float32),
+            "angle": np.zeros(self.num_envs, dtype=np.float32),
             "total": np.zeros(self.num_envs, dtype=np.float32),
         }
         # Rollout 期间完成的 episode 统计
@@ -174,9 +177,9 @@ class RacingRewardWrapper(VectorWrapper):
         p_spin = self.coefs["spin"] * np.sum(ang_vel ** 2, axis=1)
         
         # 姿态惩罚 (轻微): 只惩罚过大的 Roll/Pitch，防止翻车，但允许侧倾过弯
-        # quat = np.array(obs["quat"])
-        # rpy = Rotation.from_quat(quat).as_euler("xyz")
-        # p_angle = 0.02 * np.linalg.norm(rpy[:, :2], axis=-1) # 系数给很小
+        quat = np.array(obs["quat"])
+        rpy = Rotation.from_quat(quat).as_euler("xyz")
+        p_angle = self.coefs["angle"] * np.linalg.norm(rpy[:, :2], axis=-1) # 系数给很小
         
         # ========== 总计 ==========
         reward = (
@@ -189,7 +192,7 @@ class RacingRewardWrapper(VectorWrapper):
             - p_collision 
             - p_smooth 
             - p_spin
-            # - p_angle
+            - p_angle
         )
         self._ep_rewards["progress"] += r_progress
         self._ep_rewards["gate"] += r_gate
@@ -200,6 +203,7 @@ class RacingRewardWrapper(VectorWrapper):
         self._ep_rewards["collision"] -= p_collision
         self._ep_rewards["smooth"] -= p_smooth
         self._ep_rewards["spin"] -= p_spin
+        self._ep_rewards["angle"] -= p_angle
         self._ep_rewards["total"] += reward
         
         # Episode 结束时，记录并重置

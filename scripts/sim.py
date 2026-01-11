@@ -102,7 +102,7 @@ def simulate(
                 if ((i * fps) % config.env.freq) < fps:
                     # draw_line(env,controller.get_trajectory_waypoints())
                     env.render()
-                    # time.sleep(0.02) 
+                    time.sleep(0.02) 
             i += 1
 
         controller.episode_callback()  # Update the controller internal state and models.

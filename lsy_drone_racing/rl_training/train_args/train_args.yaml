@@ -3,10 +3,11 @@ batch_size: 98304
 clip_coef: 0.2
 clip_vloss: true
 coef_align: 0.5
+coef_angle: 0.0
 coef_collision: 20
 coef_finish: 100
 coef_gate: 20
-coef_progress: 50
+coef_progress: 60
 coef_smooth: 0.0
 coef_spin: 0.0
 coef_time: 0

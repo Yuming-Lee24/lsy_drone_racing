@@ -106,12 +106,10 @@ coef_finish:
 coef_gate:
     value: 20
 coef_progress:
-    value: 60
+    value: 50
 coef_smooth:
     value: 0.0
 coef_spin:
-    value: 0.00
-coef_angle:
     value: 0.00
 coef_time:
     value: 0

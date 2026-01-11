@@ -138,6 +138,7 @@ class Args:
     coef_collision: float = 10.0  # [修改] 稍微加大碰撞惩罚
     coef_smooth: float = 0.1      # [保持]
     coef_spin: float = 0.1        # [修改] 稍微加大防震荡
+    coef_angle: float = 0.02
     stage: int = 1
     n_history: int = 2
     """状态堆叠数量"""
@@ -250,6 +251,7 @@ def make_env(
         coef_collision=args.coef_collision,
         coef_smooth=args.coef_smooth,
         coef_spin=args.coef_spin,
+        coef_angle=args.coef_angle,
     )
     
 
