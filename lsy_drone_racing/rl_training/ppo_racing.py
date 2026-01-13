@@ -871,7 +871,7 @@ def main(
     
     # 评估
     if eval > 0:
-        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, True)
+        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, False)
         
         if wandb_enabled and wandb.run is not None:
             wandb.log({
