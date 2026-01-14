@@ -5,17 +5,26 @@
 使用方法:
     # 训练
     python ppo_racing.py --train True --wandb_enabled True
-    
-    # 评估
+
+    # 评估 (不渲染，使用默认 best_model.ckpt)
     python ppo_racing.py --train False --eval 5
-    
+
+    # 评估 (带渲染)
+    python ppo_racing.py --train False --eval 5 -r True
+
+    # 评估 (指定 checkpoint 路径)
+    python ppo_racing.py --train False --eval 5 --ckpt_path ./checkpoints/ppo_racing.ckpt
+
+    # 评估 (指定 checkpoint + 渲染)
+    python ppo_racing.py --train False --eval 5 -r True --ckpt_path ./checkpoints/ppo_racing.ckpt
+
     # WandB Sweep
     wandb sweep sweep.yaml
     wandb agent <sweep_id>
-    
+
     # 从 WandB 下载的 config.yaml 加载最佳参数
     python ppo_racing.py --load_config_from ./config.yaml --wandb_enabled True
-    
+
     # 加载 config 并覆盖部分参数
     python ppo_racing.py --load_config_from ./config.yaml --total_timesteps 5000000
 """
@@ -678,16 +687,15 @@ def evaluate_ppo(
     n_eval: int,
     model_path: Path,
     render: bool = False,
-    success_threshold: float = 600.0,  # 新增：成功阈值
 ) -> tuple[list[float], list[int]]:
-    """Evaluation function with success rate tracking."""
+    """Evaluation function with success rate tracking based on track completion."""
     set_seeds(args.seed)
     # Force CPU for evaluation to avoid tensor device errors
     device = torch.device("cpu")
-    
+
     print(f"\n[Eval] Loading model: {model_path}")
     print(f"[Eval] Render mode: {render}")
-    print(f"[Eval] Success threshold: Reward >= {success_threshold}")
+    print(f"[Eval] Success criterion: All gates passed (target_gate == -1)")
 
     # 1. Create single environment (num_envs=1)
     args_eval = Args.create(**{**vars(args), "num_envs": 1})
@@ -714,17 +722,19 @@ def evaluate_ppo(
     episode_rewards = []
     episode_lengths = []
     successes = []  # Track success for each episode
-    
+
     with torch.no_grad():
         for episode in range(n_eval):
             print(f"\n=== Episode {episode + 1} Start ===")
             obs, _ = eval_env.reset(seed=args.seed + episode)
             obs = obs.to(device)
-            
+
             episode_reward = 0
             steps = 0
             done = False
-            
+            finished_track = False  # Track if all gates were passed
+            last_target_gate = -1  # Track the last gate index to detect gate passing
+
             while not done:
                 action, _, _, _ = agent.get_action_and_value(obs, deterministic=True)
                 action = torch.clamp(action, -1.0, 1.0)
@@ -733,36 +743,71 @@ def evaluate_ppo(
                 obs, reward, terminated, truncated, info = eval_env.step(action)
                 obs = obs.to(device)
                 
+                # Extract velocity from observation vector
+                # Observation structure: [pos_z(1), vel_body(3), ang_vel(3), rot_mat(9), ...]
+                # Linear velocity is at indices 1-3 (x, y, z in body frame)
+                vel = obs[0, 1:4].cpu().numpy()  # Linear velocity vector [vx, vy, vz] in body frame
+                vel_magnitude = np.linalg.norm(vel)  # Magnitude (speed)
+
+                # Check if track is finished and detect gate passing
+                current_target_gate = -1
+                if "target_gate" in info:
+                    current_target_gate = info["target_gate"][0] if isinstance(info["target_gate"], (list, np.ndarray)) else info["target_gate"]
+                    if current_target_gate == -1:
+                        finished_track = True
+
+                # Detect gate passing (target_gate increased)
+                if current_target_gate > last_target_gate and last_target_gate >= 0:
+                    print(f"  ✓ Gate {last_target_gate} passed at step {steps}! (vel={vel_magnitude:.3f} m/s)")
+
+                # Update last_target_gate for next iteration
+                if current_target_gate != last_target_gate:
+                    last_target_gate = current_target_gate
+
+                # Print velocity every 10 steps
+                if steps % 10 == 0:
+                    print(f"Step {steps}: target_gate={current_target_gate}, magnitude={vel_magnitude:.3f} m/s")
+
                 if render:
                     eval_env.unwrapped.render()
-                    time.sleep(0.02) 
-                
+                    time.sleep(0.02)
+
                 episode_reward += reward[0].item()
                 steps += 1
-                
+
                 # Check termination
                 term = terminated[0].item()
                 trunc = truncated[0].item()
                 done = term or trunc
-                
+
                 if done:
                     print(f"\n{'='*40}")
                     print(f"Episode End at Step {steps}")
                     print(f"Reason: Terminated={term}, Truncated={trunc}")
-                    
+
+                    # Check finish reward as another indicator
                     reward_wrapper = eval_env.env.env
+                    finish_reward = 0.0
+                    if len(reward_wrapper._finished_episodes.get("finish", [])) > 0:
+                        finish_reward = reward_wrapper._finished_episodes["finish"][-1]
+                        # If finish reward > 0, track was completed
+                        if finish_reward > 0:
+                            finished_track = True
+
+                    print(f"Track Finished: {finished_track} (finish_reward={finish_reward:.2f})")
+
                     print(f"\n--- Reward Breakdown ---")
                     for key, values in reward_wrapper._finished_episodes.items():
                         if len(values) > 0:
                             print(f"  {key:12s}: {values[-1]:.4f}")  # 取最后一个完成的 episode
-                    
+
                     print(f"\n--- Summary ---")
                     print(f"  Total (accumulated): {episode_reward:.4f}")
                     print(f"  Steps: {steps}")
                     print(f"{'='*40}\n")
-            
-            # Success based on reward threshold
-            success = (episode_reward >= success_threshold)
+
+            # Success based on track completion (all gates passed)
+            success = finished_track
             
             episode_rewards.append(episode_reward)
             episode_lengths.append(steps)
@@ -774,14 +819,19 @@ def evaluate_ppo(
     # Calculate statistics
     num_successes = sum(successes)
     success_rate = (num_successes / n_eval) * 100
-    
+
     print("\n" + "="*60)
     print(f"Success: {num_successes}/{n_eval}, Success Rate: {success_rate:.1f}%")
-    print(f"Average Reward: {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
-    print(f"Average Episode Length: {np.mean(episode_lengths):.1f}")
+    print(f"Average Reward (All): {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
+    print(f"Average Episode Length (All): {np.mean(episode_lengths):.1f}")
+
     if num_successes > 0:
         successful_rewards = [r for r, s in zip(episode_rewards, successes) if s]
-        print(f"Average Reward (Successful): {np.mean(successful_rewards):.2f}")
+        successful_lengths = [l for l, s in zip(episode_lengths, successes) if s]
+        print(f"Average Reward (Successful): {np.mean(successful_rewards):.2f} ± {np.std(successful_rewards):.2f}")
+        print(f"Average Episode Length (Successful): {np.mean(successful_lengths):.1f} ± {np.std(successful_lengths):.1f}")
+    else:
+        print("No successful episodes to calculate statistics.")
     print("="*60)
     
     eval_env.close()
@@ -833,16 +883,20 @@ def main(
     wandb_enabled: bool = False,
     train: bool = True,
     eval: int = 0,
+    r: bool = False,
+    ckpt_path: str = None,
     config_file: str = None,
     load_config_from: str = None,
     **kwargs,
 ):
     """主入口。
-    
+
     Args:
         wandb_enabled: 是否启用 WandB
         train: 是否训练
         eval: 评估的 episode 数 (0 表示不评估)
+        r: 是否启用渲染 (仅在评估时有效)
+        ckpt_path: 评估时加载的模型路径 (默认为 best_model.ckpt)
         config_file: 环境配置文件
         load_config_from: 从 WandB config.yaml 加载参数 (可选)
         **kwargs: 覆盖默认 Args 的参数
@@ -861,19 +915,24 @@ def main(
     
     # 路径设置
     model_save_path = Path(__file__).parent /"checkpoints" / "ppo_racing.ckpt"
-    model_eval_path = Path(__file__).parent /"checkpoints" / "best_model.ckpt"
+
+    # 如果指定了自定义 checkpoint 路径，使用它；否则使用默认的 best_model.ckpt
+    if ckpt_path is not None:
+        model_eval_path = Path(ckpt_path)
+    else:
+        model_eval_path = Path(__file__).parent /"checkpoints" / "best_model.ckpt"
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     jax_device = args.jax_device
-    
+
     # 训练
     if train:
         train_ppo(args, model_save_path, device, jax_device, wandb_enabled)
-    
+
     # 评估
     if eval > 0:
-        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, True)
-        
+        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, render=r)
+
         if wandb_enabled and wandb.run is not None:
             wandb.log({
                 "eval/mean_reward": np.mean(episode_rewards),

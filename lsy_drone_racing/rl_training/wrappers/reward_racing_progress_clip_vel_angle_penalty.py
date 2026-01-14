@@ -132,11 +132,10 @@ class RacingRewardWrapper(VectorWrapper):
         finished = (target_gate == -1)
 
         r_progress = np.where(gate_changed | finished, 0.0, dist_diff)
-        max_velocity_threshold = 1.5  # meters per second
-        max_distance_per_step = max_velocity_threshold * 0.02  # Assuming 50 Hz update rate
+
         # Clip progress based on max velocity threshold (2.5 m/s)
         # At 50 Hz (0.02s per step): max_distance = 2.5 m/s * 0.02s = 0.05 m
-        max_progress_per_step = max_distance_per_step  # meters
+        max_progress_per_step = 0.05  # meters
         r_progress = np.clip(r_progress, -max_progress_per_step, max_progress_per_step)
 
         r_progress = r_progress * self.coefs["progress"]
