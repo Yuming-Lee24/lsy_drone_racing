@@ -50,7 +50,8 @@ from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 from lsy_drone_racing.rl_training.wrappers.observation_dev import RacingObservationWrapper
 
 from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper as BaseRewardWrapper
-from lsy_drone_racing.rl_training.wrappers.reward_racing_lv1 import RacingRewardWrapper as RacingRewardWrapperLv1
+# from lsy_drone_racing.rl_training.wrappers.reward_racing_lv1 import RacingRewardWrapper as RacingRewardWrapperLv1
+from lsy_drone_racing.rl_training.wrappers.reward_racing_progress_clip import RacingRewardWrapper as RacingRewardWrapperLv1
 
 
 # ============================================================================
@@ -677,7 +678,7 @@ def evaluate_ppo(
     n_eval: int,
     model_path: Path,
     render: bool = False,
-    success_threshold: float = 650.0,  # 新增：成功阈值
+    success_threshold: float = 600.0,  # 新增：成功阈值
 ) -> tuple[list[float], list[int]]:
     """Evaluation function with success rate tracking."""
     set_seeds(args.seed)
@@ -871,7 +872,7 @@ def main(
     
     # 评估
     if eval > 0:
-        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, False)
+        episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, True)
         
         if wandb_enabled and wandb.run is not None:
             wandb.log({

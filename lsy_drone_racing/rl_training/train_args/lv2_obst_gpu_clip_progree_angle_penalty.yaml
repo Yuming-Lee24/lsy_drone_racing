@@ -106,13 +106,13 @@ coef_finish:
 coef_gate:
     value: 20
 coef_progress:
-    value: 70
+    value: 60
 coef_smooth:
     value: 0.0
 coef_spin:
     value: 0.00
 coef_angle:
-    value: 0
+    value: 1
 coef_time:
     value: 0
 config_file:
@@ -148,13 +148,13 @@ num_minibatches:
 num_steps:
     value: 96
 seed:
-    value: 123
+    value: 42
 target_kl:
     value: null
 torch_deterministic:
     value: true
 total_timesteps:
-    value: 1_000_000_000
+    value: 500_000_000
 train:
     value: true
 update_epochs:
