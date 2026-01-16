@@ -1,31 +1,31 @@
-"""PPO 训练脚本 - 无人机竞速
+"""PPO Training Script - Drone Racing
 
-基于 CleanRL PPO 实现，使用自定义的观测和奖励 Wrapper。
+Based on CleanRL PPO implementation, using custom observation and reward wrappers.
 
-使用方法:
-    # 训练
+Usage:
+    # Training
     python ppo_racing.py --train True --wandb_enabled True
 
-    # 评估 (不渲染，使用默认 best_model.ckpt)
+    # Evaluation (no rendering, using default best_model.ckpt)
     python ppo_racing.py --train False --eval 5
 
-    # 评估 (带渲染)
+    # Evaluation (with rendering)
     python ppo_racing.py --train False --eval 5 -r True
 
-    # 评估 (指定 checkpoint 路径)
+    # Evaluation (specify checkpoint path)
     python ppo_racing.py --train False --eval 5 --ckpt_path ./checkpoints/ppo_racing.ckpt
 
-    # 评估 (指定 checkpoint + 渲染)
+    # Evaluation (specify checkpoint + rendering)
     python ppo_racing.py --train False --eval 5 -r True --ckpt_path ./checkpoints/ppo_racing.ckpt
 
     # WandB Sweep
     wandb sweep sweep.yaml
     wandb agent <sweep_id>
 
-    # 从 WandB 下载的 config.yaml 加载最佳参数
+    # Load best parameters from WandB downloaded config.yaml
     python ppo_racing.py --load_config_from ./config.yaml --wandb_enabled True
 
-    # 加载 config 并覆盖部分参数
+    # Load config and override some parameters
     python ppo_racing.py --load_config_from ./config.yaml --total_timesteps 5000000
 """
 
@@ -48,84 +48,78 @@ import wandb
 from torch import Tensor
 from torch.distributions.normal import Normal
 
-# 环境相关
+# Environment related
 from lsy_drone_racing.envs.drone_race import VecDroneRaceEnv
 from lsy_drone_racing.utils import load_config
 from crazyflow.envs.norm_actions_wrapper import NormalizeActions
 from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 
-# 自定义 Wrapper
+# Custom Wrappers
 # from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
 from lsy_drone_racing.rl_training.wrappers.observation_dev import RacingObservationWrapper
 
 from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper as BaseRewardWrapper
 # from lsy_drone_racing.rl_training.wrappers.reward_racing_lv1 import RacingRewardWrapper as RacingRewardWrapperLv1
-from lsy_drone_racing.rl_training.wrappers.reward_racing_progress_clip import RacingRewardWrapper as RacingRewardWrapperLv1
+from lsy_drone_racing.rl_training.wrappers.reward_racing_progress_clip_vel_angle_penalty import RacingRewardWrapper as RacingRewardWrapperLv1
 
 
 # ============================================================================
-# 配置参数
+# Configuration Parameters
 # ============================================================================
 
 @dataclass
 class Args:
-    """训练配置参数。
+    """Training configuration parameters.
     
-    支持通过命令行或 WandB Sweep 覆盖。
+    Can be overridden via command line or WandB Sweep.
     """
     
-    # ---------- 基础设置 ----------
+    # ---------- Basic Settings ----------
     seed: int = 42
-    """随机种子"""
+    """Random seed"""
     torch_deterministic: bool = True
-    """是否使用确定性 CUDA 操作"""
+    """Whether to use deterministic CUDA operations"""
     cuda: bool = True
-    """是否使用 CUDA"""
+    """Whether to use CUDA"""
     jax_device: str = "gpu"
-    """JAX 环境设备 (cpu/gpu)"""
+    """JAX environment device (cpu/gpu)"""
     
-    # ---------- WandB 设置 ----------
+    # ---------- WandB Settings ----------
     wandb_project_name: str = "DroneRacing-PPO"
-    """WandB 项目名"""
+    """WandB project name"""
     wandb_entity: str = None
-    """WandB 团队/用户名"""
+    """WandB team/username"""
     
-# ---------- 环境配置 ----------
-    config_file: str = "level2_no_obst.toml" # 确保是用无障碍的配置
-    
-    # [关键修改 1] 并行环境数
-    # 稍微降低环境数，把内存留给更长的 num_steps
+# ---------- Environment Configuration ----------
+    config_file: str = "level2.toml"
+
     num_envs: int = 1  
     
-    # ---------- PPO 超参数 (竞速调优版) ----------
+    # ---------- PPO Hyperparameters (Racing Tuned Version) ----------
     
-    # [关键修改 2] 训练总量
-    # 竞速需要精细打磨轨迹，通常需要较多步数
+    # Total training steps
+    # Racing requires fine-tuned trajectories, usually needs more steps
     total_timesteps: int = 5_000_000  
     
-    # [关键修改 3] 学习率
-    # 3e-4 是黄金标准。开启退火(anneal_lr)非常重要，
-    # 可以在训练后期让无人机动作更细腻，不再抖动。
+    # Learning rate
     learning_rate: float = 3e-4
     anneal_lr: bool = True
     
-    # [关键修改 4] 视野长度 (Rollout Length)
-    # 128 steps @ 50Hz = 2.56秒。
-    # 这让 GAE (优势函数) 能更准确地评估当前动作对未来的影响。
+    # Rollout Length
     num_steps: int = 128  
     
-    # 批次计算
+    # Batch calculation
     # Batch Size = 64 * 128 = 8192
     # Minibatch Size = 8192 / 4 = 2048
     num_minibatches: int = 4
     update_epochs: int = 10
     
-    # [关键修改 5] 熵系数 (Entropy Coef)
-    # 竞速任务（尤其是过拟合）需要确定性策略。
-    # 0.01 适合初期探索。如果你发现后期收敛不够快，可以改小到 0.001 或 0.0
+    # Entropy Coefficient (Entropy Coef)
+    # Racing tasks (especially overfitting) require deterministic policies.
+    # 0.01 is suitable for initial exploration. If convergence is too slow later, can reduce to 0.001 or 0.0
     ent_coef: float = 0.01  
     
-    # 其他标准参数 (保持默认即可)
+    # Other standard parameters (keep defaults)
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_coef: float = 0.2
@@ -135,35 +129,35 @@ class Args:
     target_kl: float = None
     norm_adv: bool = True
     
-    # 网络结构
+    # Network structure
     hidden_dim: int = 256
-    """隐藏层维度"""
+    """Hidden layer dimension"""
     
-# ---------- 奖励系数 (适配 RacingRewardWrapperLv0) ----------
-    coef_progress: float = 20.0   # [修改] 差分奖励需要较大的系数
-    coef_gate: float = 10.0       # [保持]
-    coef_finish: float = 50.0     # [新增] 完赛大奖
-    coef_time: float = 0.05       # [新增] 时间惩罚
-    coef_align: float = 0.5       # [保持]
-    coef_collision: float = 10.0  # [修改] 稍微加大碰撞惩罚
-    coef_smooth: float = 0.1      # [保持]
-    coef_spin: float = 0.1        # [修改] 稍微加大防震荡
+# ---------- Reward Coefficients (Adapted for RacingRewardWrapperLv0) ----------
+    coef_progress: float = 20.0   
+    coef_gate: float = 10.0       
+    coef_finish: float = 50.0     
+    coef_time: float = 0.05       
+    coef_align: float = 0.5       
+    coef_collision: float = 10.0  
+    coef_smooth: float = 0.1      
+    coef_spin: float = 0.1        
     coef_angle: float = 0.02
     stage: int = 1
     n_history: int = 2
-    """状态堆叠数量"""
+    """State stacking count"""
     
-    # ---------- 运行时计算 ----------
+    # ---------- Runtime Calculations ----------
     batch_size: int = 0
-    """批大小 (运行时计算)"""
+    """Batch size (computed at runtime)"""
     minibatch_size: int = 0
-    """minibatch 大小 (运行时计算)"""
+    """Minibatch size (computed at runtime)"""
     num_iterations: int = 0
-    """迭代次数 (运行时计算)"""
+    """Number of iterations (computed at runtime)"""
     
     @staticmethod
     def create(**kwargs: Any) -> "Args":
-        """创建并初始化 Args 实例。"""
+        """Create and initialize Args instance."""
         #num_iterations = total_timesteps // batch_size = total_timesteps // (num_envs * num_steps)
         args = Args(**kwargs)
         args.batch_size = int(args.num_envs * args.num_steps)
@@ -173,11 +167,11 @@ class Args:
 
 
 # ============================================================================
-# 工具函数
+# Utility Functions
 # ============================================================================
 
 def set_seeds(seed: int):
-    """设置所有随机种子。"""
+    """Set all random seeds."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -187,14 +181,14 @@ def set_seeds(seed: int):
 
 
 def layer_init(layer: nn.Module, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Module:
-    """正交初始化网络层。"""
+    """Orthogonal initialization for network layers."""
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
 
 # ============================================================================
-# 环境创建
+# Environment Creation
 # ============================================================================
 
 def make_env(
@@ -202,33 +196,33 @@ def make_env(
     jax_device: str = "cpu",
     torch_device: torch.device = torch.device("cpu"),
 ) -> gym.vector.VectorEnv:
-    """创建训练环境。
+    """Create training environment.
     
-    Wrapper 链:
+    Wrapper chain:
         VecDroneRaceEnv
-        → NormalizeActions (动作归一化 [-1,1] → 实际范围)
-        → RacingRewardWrapper (计算 dense reward)
-        → RacingObservationWrapper (观测变换: 字典 → 88D 向量)
+        → NormalizeActions (action normalization [-1,1] → actual range)
+        → RacingRewardWrapper (compute dense reward)
+        → RacingObservationWrapper (observation transformation: dict → 88D vector)
         → JaxToTorch (JAX Array → PyTorch Tensor)
     
     Args:
-        args: 训练配置
-        jax_device: JAX 设备
-        torch_device: PyTorch 设备
+        args: Training configuration
+        jax_device: JAX device
+        torch_device: PyTorch device
         
     Returns:
-        包装后的向量化环境
+        Wrapped vectorized environment
     """
-    # 加载配置文件
+    # Load configuration file
     config_path = Path(__file__).parents[2] / "config" / args.config_file
     config = load_config(config_path)
     
-    # 从配置文件自动读取门和障碍物数量
+    # Automatically read gate and obstacle counts from config file
     n_gates = len(config.env.track.gates)
     n_obstacles = len(config.env.track.get("obstacles", []))
-    print(f"[make_env] 配置: {args.config_file}, 门数: {n_gates}, 障碍物数: {n_obstacles}")
+    print(f"[make_env] Config: {args.config_file}, Gates: {n_gates}, Obstacles: {n_obstacles}")
     
-    # 创建基础环境
+    # Create base environment
     env = VecDroneRaceEnv(
         num_envs=args.num_envs,
         freq=config.env.freq,
@@ -243,21 +237,18 @@ def make_env(
         device=jax_device,
     )
     
-    # 1. 动作归一化: 将网络输出 [-1, 1] 映射到实际动作范围
+    # 1. Action normalization: Map network output [-1, 1] to actual action range
     env = NormalizeActions(env)
     
-    # 2. 包装奖励 (需要原始 obs 字典)
-    env = RacingRewardWrapperLv1(  # 确保类名和你 import 的一致
+    # 2. Reward wrapper (needs original obs dict)
+    env = RacingRewardWrapperLv1(  # Ensure class name matches your import
         env,
-        n_gates=n_gates,           # 显式传入 n_gates
-        # stage=1,                 # 竞速模式下 stage 通常不再通过参数控制逻辑，可以注释掉或留着占位
-        
-        # 传递所有系数
+        n_gates=n_gates,           # Explicitly pass n_gates        
+        # Pass all coefficients
         coef_progress=args.coef_progress,
         coef_gate=args.coef_gate,
-        coef_finish=args.coef_finish,     # <--- 之前缺失的
-        coef_time=args.coef_time,         # <--- 之前缺失的 (虽然你snippet里有，但确保 args 里有定义)
-        coef_align=args.coef_align,
+        coef_finish=args.coef_finish,     
+        coef_time=args.coef_time,         
         coef_collision=args.coef_collision,
         coef_smooth=args.coef_smooth,
         coef_spin=args.coef_spin,
@@ -265,44 +256,44 @@ def make_env(
     )
     
 
-    # 3. 包装观测 (将字典转为向量)
+    # 3. Observation wrapper (convert dict to vector)
     env = RacingObservationWrapper(
         env,
         n_gates=n_gates,
         n_obstacles=n_obstacles,
-        stage=args.stage,  # Stage 1: 屏蔽障碍物
-        n_history=args.n_history,  # 新增 状态堆叠数量
+        stage=args.stage,  # Stage 1: Mask obstacles | Stage 2: Show obstacles
+        n_history=args.n_history,  
     )
     
-    # 4. 数据类型转换: JAX Array → PyTorch Tensor
+    # 4. Data type conversion: JAX Array → PyTorch Tensor
     env = JaxToTorch(env, torch_device)
     
     return env
 
 
 # ============================================================================
-# 神经网络
+# Neural Network
 # ============================================================================
 
 class Agent(nn.Module):
-    """PPO Agent 网络。
+    """PPO Agent network.
     
-    Actor-Critic 结构:
-    - Actor: 输出动作均值和标准差
-    - Critic: 输出状态价值
+    Actor-Critic structure:
+    - Actor: Outputs action mean and standard deviation
+    - Critic: Outputs state value
     """
     
     def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 256):
-        """初始化网络。
+        """Initialize network.
         
         Args:
-            obs_dim: 观测维度 (88)
-            action_dim: 动作维度 (4)
-            hidden_dim: 隐藏层维度
+            obs_dim: Observation dimension (88)
+            action_dim: Action dimension (4)
+            hidden_dim: Hidden layer dimension
         """
         super().__init__()
         
-        # Critic 网络
+        # Critic network
         self.critic = nn.Sequential(
             layer_init(nn.Linear(obs_dim, hidden_dim)),
             nn.Tanh(),
@@ -311,42 +302,42 @@ class Agent(nn.Module):
             layer_init(nn.Linear(hidden_dim, 1), std=1.0),
         )
         
-        # Actor 网络 (输出动作均值)
+        # Actor network (outputs action mean)
         self.actor_mean = nn.Sequential(
             layer_init(nn.Linear(obs_dim, hidden_dim)),
             nn.Tanh(),
             layer_init(nn.Linear(hidden_dim, hidden_dim)),
             nn.Tanh(),
             layer_init(nn.Linear(hidden_dim, action_dim), std=0.01),
-            nn.Tanh(),  # 输出范围 [-1, 1]
+            nn.Tanh(),  # Output range [-1, 1]
         )
         
         # ============================================================
-        # [关键修改] 推力偏置 (Thrust Bias) 初始化
+        # [Key Modification] Thrust Bias Initialization
         # ============================================================
-        # 我们要修改 actor_mean 的最后一层 Linear 层的 bias
-        # 结构是: [Linear, Tanh, Linear, Tanh, Linear(索引-2), Tanh(索引-1)]
+        # We need to modify the bias of the last Linear layer in actor_mean
+        # Structure: [Linear, Tanh, Linear, Tanh, Linear(index-2), Tanh(index-1)]
         with torch.no_grad():
-            last_layer = self.actor_mean[-2] # 获取最后一个 Linear 层
+            last_layer = self.actor_mean[-2] # Get the last Linear layer
             
-            # 1. 确保姿态通道 (0,1,2) 偏置为 0 (水平)
-            # 这里的 0 对应 NormalizeActions 映射后的中间值
+            # 1. Ensure attitude channels (0,1,2) bias to 0 (horizontal)
+            # Here 0 corresponds to the middle value after NormalizeActions mapping
             last_layer.bias[0] = 0.0  # Roll
             last_layer.bias[1] = 0.0  # Pitch
             last_layer.bias[2] = 0.0  # Yaw
             
-            # 2. 给推力通道 (3) 加偏置
+            # 2. Add bias to thrust channel (3)
             last_layer.bias[3] = 1.0
 
-        # 动作标准差 (可学习参数)
-        # 根据动作维度自适应初始化
+        # Action standard deviation (learnable parameter)
+        # Adaptively initialize based on action dimension
         if action_dim == 4:
-            # attitude 模式: [roll, pitch, yaw,thrust]
+            # attitude mode: [roll, pitch, yaw, thrust]
             init_logstd = torch.tensor([[-1.0, -1.0, -1.0, -0.5]])
         self.actor_logstd = nn.Parameter(init_logstd)
     
     def get_value(self, x: Tensor) -> Tensor:
-        """获取状态价值。"""
+        """Get state value."""
         return self.critic(x)
     
     def get_action_and_value(
@@ -355,30 +346,22 @@ class Agent(nn.Module):
         action: Tensor | None = None, 
         deterministic: bool = False
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        """获取动作和价值。
+        """Get action and value.
         
         Args:
-            x: 观测
-            action: 已有动作 (用于计算 log_prob)
-            deterministic: 是否使用确定性动作
+            x: Observation
+            action: Existing action (for computing log_prob)
+            deterministic: Whether to use deterministic action
             
         Returns:
-            action: 动作
-            log_prob: 动作的 log 概率
-            entropy: 策略熵
-            value: 状态价值
+            action: Action
+            log_prob: Log probability of action
+            entropy: Policy entropy
+            value: State value
         """
         action_mean = self.actor_mean(x)
         action_logstd = self.actor_logstd.expand_as(action_mean)
         action_std = torch.exp(action_logstd)
-        # ============================================================
-        # [关键修改] 限制 Log Std 的下界，防止熵坍缩
-        # ============================================================
-        # min=-2.0 对应 std ≈ 0.135。这保证了无论训练多久，
-        # 智能体始终保留至少 0.135 的探索噪声，不会变成绝对的死记硬背。
-        # max=2.0 防止方差过大导致动作完全随机。
-        # action_logstd = torch.clamp(action_logstd, min=-2.0, max=2.0)
-        # ============================================================
         probs = Normal(action_mean, action_std)
         
         if action is None:
@@ -393,7 +376,7 @@ class Agent(nn.Module):
 
 
 # ============================================================================
-# 训练函数
+# Training Function
 # ============================================================================
 
 def train_ppo(
@@ -403,21 +386,21 @@ def train_ppo(
     jax_device: str,
     wandb_enabled: bool = False,
 ) -> list[float]:
-    """PPO 训练主循环。
+    """PPO training main loop.
     
-    基于 CleanRL 实现: https://docs.cleanrl.dev/
+    Based on CleanRL implementation: https://docs.cleanrl.dev/
     
     Args:
-        args: 训练配置
-        model_path: 模型保存路径
-        device: PyTorch 设备
-        jax_device: JAX 设备
-        wandb_enabled: 是否启用 WandB
+        args: Training configuration
+        model_path: Path to save model
+        device: PyTorch device
+        jax_device: JAX device
+        wandb_enabled: Whether to enable WandB
         
     Returns:
-        训练过程中的 episode reward 历史
+        Episode reward history during training
     """
-    # ========== 初始化 ==========
+    # ========== Initialization ==========
     if wandb_enabled and wandb.run is None:
         wandb.init(
             project=args.wandb_project_name,
@@ -430,24 +413,24 @@ def train_ppo(
     print(f"Training on device: {device} | Environment device: {jax_device}")
     print(f"Config: {args.config_file}")
 
-        # ========== 保存配置 ==========
+        # ========== Save Configuration ==========
     config_save_path = model_path.parent.parent / "train_args" / "train_args.yaml"
     with open(config_save_path, 'w') as f:
         yaml.dump(vars(args), f, default_flow_style=False)
     print(f"Config saved to {config_save_path}")
 
-    # ========== 创建环境 ==========
+    # ========== Create Environment ==========
     envs = make_env(args, jax_device=jax_device, torch_device=device)
     
     obs_dim = envs.single_observation_space.shape[0]  # 88
     action_dim = envs.single_action_space.shape[0]    # 4
     print(f"Observation dim: {obs_dim}, Action dim: {action_dim}")
     
-    # ========== 创建 Agent ==========
+    # ========== Create Agent ==========
     agent = Agent(obs_dim, action_dim, hidden_dim=args.hidden_dim).to(device)
     optimizer = optim.AdamW(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     
-    # ========== 存储缓冲区 ==========
+    # ========== Storage Buffers ==========
     obs = torch.zeros((args.num_steps, args.num_envs, obs_dim)).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs, action_dim)).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -455,20 +438,20 @@ def train_ppo(
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
-    # =================初始化保存变量 =================
+    # ================= Initialize save variables =================
     best_reward = -float('inf')
     best_model_path = model_path.parent / "best_model.ckpt"
-    print(f"训练开始。按 Ctrl+C 可安全停止并保存到: {model_path}")
-    print(f"best model saved under: {best_model_path}")
+    print(f"Training started. Press Ctrl+C to safely stop and save to: {model_path}")
+    print(f"Best model will be saved under: {best_model_path}")
     # ===========================================================
     
-    # ========== 开始训练 ==========
+    # ========== Start Training ==========
     global_step = 0
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = next_obs.to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     
-    # 统计
+    # Statistics tracking
     sum_rewards = torch.zeros(args.num_envs).to(device)
     sum_rewards_hist = []
     len_hist = []
@@ -478,25 +461,25 @@ def train_ppo(
         for iteration in range(1, args.num_iterations + 1):
             iter_start_time = time.time()
             
-            # 学习率退火
+            # Learning rate annealing
             if args.anneal_lr:
                 frac = 1.0 - (iteration - 1.0) / args.num_iterations
                 optimizer.param_groups[0]["lr"] = frac * args.learning_rate
             
-            # ========== 收集数据 ==========
+            # ========== Collect Data ==========
             for step in range(args.num_steps):
                 global_step += args.num_envs
                 obs[step] = next_obs
                 dones[step] = next_done
                 
-                # 采样动作
+                # Sample action
                 with torch.no_grad():
                     action, logprob, _, value = agent.get_action_and_value(next_obs)
                     values[step] = value.flatten()
                 actions[step] = action
                 logprobs[step] = logprob
                 
-                # 执行动作 (JaxToTorch wrapper 会处理 tensor 转换)
+                # Execute action (JaxToTorch wrapper handles tensor conversion)
                 next_obs, reward, terminations, truncations, infos = envs.step(action)
                 next_obs = next_obs.to(device)
                 reward = reward.to(device)
@@ -504,7 +487,7 @@ def train_ppo(
                 rewards[step] = reward
                 sum_rewards += reward
                 
-                # 处理 episode 结束
+                # Handle episode end
                 next_done = (terminations | truncations).float().to(device)
                 
                 if next_done.any():
@@ -516,7 +499,7 @@ def train_ppo(
                             wandb.log({"train/episode_reward": r.item()}, step=global_step)
                     sum_rewards[next_done.bool()] = 0
             
-            # ========== 计算 GAE ==========
+            # ========== Compute GAE ==========
             with torch.no_grad():
                 next_value = agent.get_value(next_obs).reshape(1, -1)
                 advantages = torch.zeros_like(rewards).to(device)
@@ -537,7 +520,7 @@ def train_ppo(
                 
                 returns = advantages + values
             
-            # ========== 展平数据 ==========
+            # ========== Flatten Data ==========
             b_obs = obs.reshape((-1, obs_dim))
             b_logprobs = logprobs.reshape(-1)
             b_actions = actions.reshape((-1, action_dim))
@@ -545,7 +528,7 @@ def train_ppo(
             b_returns = returns.reshape(-1)
             b_values = values.reshape(-1)
             
-            # ========== PPO 更新 ==========
+            # ========== PPO Update ==========
             b_inds = np.arange(args.batch_size)
             clipfracs = []
             
@@ -596,11 +579,11 @@ def train_ppo(
                     nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                     optimizer.step()
                 
-                # 早停
+                # Early stopping
                 if args.target_kl is not None and approx_kl > args.target_kl:
                     break
             
-            # ========== 日志记录 ==========
+            # ========== Logging ==========
             y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
             var_y = np.var(y_true)
             explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -621,53 +604,52 @@ def train_ppo(
                 }, step=global_step)
             
 
-            # 打印进度
+            # Print progress
             if iteration % 10 == 0 or iteration == 1:
                 avg_reward = np.mean(sum_rewards_hist[-100:]) if sum_rewards_hist else 0
-                # 计算平均长度
+                # Calculate average length
             
                 print(f"Iter {iteration}/{args.num_iterations} | Steps: {global_step/1e6:.2f}M/{args.total_timesteps/1e6:.2f}M")
                 
-                # [修改 C] 打印更详细的调试信息
-                # 1. 任务表现: 奖励和存活时长
+                # Print more detailed debug information
+                # 1. Task performance: Reward and survival time
                 print(f"  [Perf] Avg Rew: {avg_reward:.2f}")
                 
-                # 2. 网络健康度: 
-                #    Val (Critic误差): 越低越好
-                #    Ent (策略熵): 代表探索欲望。如果迅速掉到 0 说明过早收敛(学傻了)
-                #    KL  (更新幅度): 应该在 0.01 左右。太大说明学习率太高，太小说明学不动
+                # 2. Network health:
+                #    Ent (Policy entropy): Represents exploration desire. If quickly drops to 0, means premature convergence (overfitted)
+                #    KL  (Update magnitude): Should be around 0.01. Too large means learning rate too high, too small means not learning
                 print(f"  [Loss] Val: {v_loss.item():.4f} | Pol: {pg_loss.item():.4f} | "
                     f"Ent: {entropy_loss.item():.4f} | KL: {approx_kl.item():.4f}")
                 
                 print(f"  [Time] {iter_time:.2f}s | SPS: {int(args.num_envs * args.num_steps / iter_time)}")
                 print("-" * 50)
-                # ================= [插入点 3] 自动保存逻辑 =================
-                # 1. 每次打印日志都保存一下最新模型 (覆盖)
+                # ================= Auto-save Logic =================
+                # 1. Save latest model every time logging (overwrite)
                 if model_path is not None:
                     torch.save(agent.state_dict(), model_path)
                 
-                # 2. 如果奖励创新高，额外存一份 "best_model"
-                if avg_reward > best_reward and iteration > 10:  # 前10次不稳定，不存
+                # 2. If reward reaches new high, save an extra "best_model"
+                if avg_reward > best_reward and iteration > 10:  # First 10 iterations unstable, don't save
                     best_reward = avg_reward
                     torch.save(agent.state_dict(), best_model_path)
-                    print(f"  [★] 新纪录！最佳模型已保存 (Rew: {best_reward:.2f})")
+                    print(f"  [★] New record! Best model saved (Rew: {best_reward:.2f})")
                 # =========================================================
-    # ========== [新增] 捕获中断 ==========
+    # ========== Capture Interrupt ==========
     except KeyboardInterrupt:
-        print("\n\n[警报] 用户手动停止训练 (Ctrl+C)！")
+        print("\n\n[WARNING] Training interrupted by user (Ctrl+C)!")
         if model_path is not None:
             torch.save(agent.state_dict(), model_path)
-            print(f"  [安全] 模型已紧急保存到: {model_path}")
-        print("正在关闭环境...")
+            print(f"  [SAFETY] Model emergency saved to: {model_path}")
+        print("Closing environment...")
         envs.close()
         return sum_rewards_hist
     # ===================================
-    # ========== 保存模型 ==========
+    # ========== Save Model ==========
     train_time = time.time() - train_start_time
-    # 计算分和秒
+    # Convert to minutes and seconds
     m, s = divmod(int(train_time), 60)
     
-    # 打印格式: "Training completed in 28m 52s ..."
+    # Print format: "Training completed in 28m 52s ..."
     print(f"\nTraining completed in {m}m {s}s ({global_step:,} steps)")
     
     if model_path is not None:
@@ -679,7 +661,7 @@ def train_ppo(
 
 
 # ============================================================================
-# 评估函数
+# Evaluation Function
 # ============================================================================
 
 def evaluate_ppo(
@@ -749,26 +731,9 @@ def evaluate_ppo(
                 vel = obs[0, 1:4].cpu().numpy()  # Linear velocity vector [vx, vy, vz] in body frame
                 vel_magnitude = np.linalg.norm(vel)  # Magnitude (speed)
 
-                # Check if track is finished and detect gate passing
-                current_target_gate = -1
-                if "target_gate" in info:
-                    current_target_gate = info["target_gate"][0] if isinstance(info["target_gate"], (list, np.ndarray)) else info["target_gate"]
-                    if current_target_gate == -1:
-                        finished_track = True
-
-                # Detect gate passing (target_gate increased)
-                if current_target_gate > last_target_gate and last_target_gate >= 0:
-                    print(f"  ✓ Gate {last_target_gate} passed at step {steps}! (vel={vel_magnitude:.3f} m/s)")
-
-                # Update last_target_gate for next iteration
-                if current_target_gate != last_target_gate:
-                    last_target_gate = current_target_gate
-
-                # Print velocity every 10 steps
-                if steps % 10 == 0:
-                    print(f"Step {steps}: target_gate={current_target_gate}, magnitude={vel_magnitude:.3f} m/s")
-
                 if render:
+                    if steps % 10 == 0:
+                        print(f"Step {steps}: magnitude={vel_magnitude:.3f} m/s")
                     eval_env.unwrapped.render()
                     time.sleep(0.02)
 
@@ -799,7 +764,7 @@ def evaluate_ppo(
                     print(f"\n--- Reward Breakdown ---")
                     for key, values in reward_wrapper._finished_episodes.items():
                         if len(values) > 0:
-                            print(f"  {key:12s}: {values[-1]:.4f}")  # 取最后一个完成的 episode
+                            print(f"  {key:12s}: {values[-1]:.4f}")  # Get the last completed episode
 
                     print(f"\n--- Summary ---")
                     print(f"  Total (accumulated): {episode_reward:.4f}")
@@ -837,31 +802,31 @@ def evaluate_ppo(
     eval_env.close()
     return episode_rewards, episode_lengths
 # ============================================================================
-# 主函数
+# Main Function
 # ============================================================================
 
 def load_wandb_config(config_path: str | Path) -> dict:
-    """从 WandB 下载的 config.yaml 加载参数。
+    """Load parameters from WandB downloaded config.yaml.
     
-    WandB config.yaml 格式可能是:
+    WandB config.yaml format may be:
         learning_rate:
           value: 0.001
-    或者:
+    or:
         learning_rate: 0.001
     
     Args:
-        config_path: config.yaml 文件路径
+        config_path: Path to config.yaml file
         
     Returns:
-        扁平化的参数字典
+        Flattened parameter dictionary
     """
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
-    # 扁平化: 如果值是 dict 且有 'value' 键，提取它
+    # Flatten: if value is dict with 'value' key, extract it
     flat_config = {}
     
-    # 需要跳过的 WandB 内部字段
+    # WandB internal fields to skip
     skip_keys = {'wandb_version', '_wandb', 'wandb_enabled', 'train', 'eval'}
     
     for key, val in config.items():
@@ -872,7 +837,7 @@ def load_wandb_config(config_path: str | Path) -> dict:
         else:
             flat_config[key] = val
     
-    print(f"[load_wandb_config] 从 {config_path} 加载参数:")
+    print(f"[load_wandb_config] Loading parameters from {config_path} :")
     for k, v in flat_config.items():
         print(f"  {k}: {v}")
     
@@ -889,34 +854,34 @@ def main(
     load_config_from: str = None,
     **kwargs,
 ):
-    """主入口。
+    """Main entry point.
 
     Args:
-        wandb_enabled: 是否启用 WandB
-        train: 是否训练
-        eval: 评估的 episode 数 (0 表示不评估)
-        r: 是否启用渲染 (仅在评估时有效)
-        ckpt_path: 评估时加载的模型路径 (默认为 best_model.ckpt)
-        config_file: 环境配置文件
-        load_config_from: 从 WandB config.yaml 加载参数 (可选)
-        **kwargs: 覆盖默认 Args 的参数
+        wandb_enabled: Whether to enable WandB
+        train: Whether to train
+        eval: Number of evaluation episodes (0 means no evaluation)
+        r: Whether to enable rendering (only valid during evaluation)
+        ckpt_path: Model path to load during evaluation (default: best_model.ckpt)
+        config_file: Environment configuration file
+        load_config_from: Load parameters from WandB config.yaml (optional)
+        **kwargs: Parameters to override default Args
     """
-    # 如果指定了 wandb config 文件，先加载它
+    # If wandb config file is specified, load it first
     if load_config_from is not None:
         wandb_config = load_wandb_config(load_config_from)
-        # wandb config 优先级低于命令行参数
+        # wandb config has lower priority than command line arguments
         for key, val in wandb_config.items():
             if key not in kwargs:
                 kwargs[key] = val
     
-    # 创建配置
+    # Create configuration
     # kwargs["config_file"] = config_file
     args = Args.create(**kwargs)
     
-    # 路径设置
+    # Path settings
     model_save_path = Path(__file__).parent /"checkpoints" / "ppo_racing.ckpt"
 
-    # 如果指定了自定义 checkpoint 路径，使用它；否则使用默认的 best_model.ckpt
+    # If custom checkpoint path is specified, use it; otherwise use default best_model.ckpt
     if ckpt_path is not None:
         model_eval_path = Path(ckpt_path)
     else:
@@ -925,11 +890,11 @@ def main(
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
     jax_device = args.jax_device
 
-    # 训练
+    # Training
     if train:
         train_ppo(args, model_save_path, device, jax_device, wandb_enabled)
 
-    # 评估
+    # Evaluation
     if eval > 0:
         episode_rewards, episode_lengths = evaluate_ppo(args, eval, model_eval_path, render=r)
 

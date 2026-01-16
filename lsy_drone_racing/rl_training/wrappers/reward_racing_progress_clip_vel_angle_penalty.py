@@ -1,10 +1,10 @@
-"""奖励塑形 Wrapper - 竞速专用版
+"""Reward Shaping Wrapper - Racing Specialized Version
 
-针对固定赛道优化：
-1. 使用差分奖励 (Potential-based) 替代绝对距离奖励，防止悬停刷分。
-2. 加入时间惩罚，鼓励快速完赛。
-3. 简化姿态惩罚，允许大机动过弯。
-4. 逐渐增加过门奖励
+Optimized for fixed tracks:
+1. Use differential reward (Potential-based) instead of absolute distance reward to prevent hovering exploitation.
+2. Add time penalty to encourage fast completion.
+3. Simplify attitude penalty to allow aggressive maneuvers.
+4. Gradually increase gate passing reward
 Reward = (d_t-1 - d_t) * C_prog + R_gate + R_finish - P_time - P_crash - P_smooth
 """
 
@@ -21,25 +21,25 @@ if TYPE_CHECKING:
 
 
 class RacingRewardWrapper(VectorWrapper):
-    """竞速专用奖励 Wrapper。"""
+    """Racing-specialized reward wrapper."""
     
-    # 门局部坐标系下的法向量 (门面朝 X 轴)
+    # Normal vector in gate local coordinate system (gate faces X-axis)
     GATE_NORMAL_LOCAL = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     
     def __init__(
         self,
         env: VectorEnv,
         n_gates: int = 4,
-        stage: int = 0, # 兼容接口，实际可以忽略
-        # ========== 关键系数调整 ==========
-        coef_progress: float = 20.0,   # 差分奖励系数，通常要大 (因为差值很小)
-        coef_gate: float = 10.0,       # 过单门奖励
-        coef_finish: float = 50.0,     # 完赛大奖
-        coef_time: float = 0.05,       # 时间惩罚 (每步扣分)
-        coef_collision: float = 10.0,  # 碰撞惩罚 (撞了就重开，惩罚大点)
-        coef_smooth: float = 0.1,      # 动作平滑
-        coef_spin: float = 0.1,        # 角速度惩罚 (防震荡)
-        coef_align: float = 0.5,       # 对齐奖励 (辅助引导)
+        stage: int = 0, # For interface compatibility, can actually be ignored
+        # ========== Key Coefficient Adjustments ==========
+        coef_progress: float = 20.0,   # Differential reward coefficient, usually needs to be large (because difference is small)
+        coef_gate: float = 10.0,       # Single gate passing reward
+        coef_finish: float = 50.0,     # Track completion bonus
+        coef_time: float = 0.05,       # Time penalty (deduct points per step)
+        coef_collision: float = 10.0,  # Collision penalty (crash means restart, penalty should be large)
+        coef_smooth: float = 0.1,      # Action smoothness
+        coef_spin: float = 0.1,        # Angular velocity penalty (prevent oscillation)
+        coef_align: float = 0.5,       # Alignment reward (auxiliary guidance)
         coef_angle: float = 0.02,
     ):
         super().__init__(env)
@@ -58,12 +58,12 @@ class RacingRewardWrapper(VectorWrapper):
             "angle": coef_angle,
         }
         
-        # 内部状态
+        # Internal state
         self._last_dist_to_gate = np.zeros(self.num_envs, dtype=np.float32)
         self._last_action = np.zeros((self.num_envs, 4), dtype=np.float32)
         self._last_target_gate = np.zeros(self.num_envs, dtype=np.int32)
 
-        # 新增：累积奖励追踪
+        # New: Cumulative reward tracking
         self._ep_rewards = {
             "progress": np.zeros(self.num_envs, dtype=np.float32),
             "gate": np.zeros(self.num_envs, dtype=np.float32),
@@ -77,32 +77,32 @@ class RacingRewardWrapper(VectorWrapper):
             "angle": np.zeros(self.num_envs, dtype=np.float32),
             "total": np.zeros(self.num_envs, dtype=np.float32),
         }
-        # Rollout 期间完成的 episode 统计
+        # Episode statistics completed during rollout
         self._finished_episodes = {k: [] for k in self._ep_rewards.keys()}
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
         
-        # 初始化距离
+        # Initialize distance
         self._last_dist_to_gate = self._compute_dist_to_gate(obs)
         
-        # 重置状态
+        # Reset state
         self._last_action = np.zeros((self.num_envs, 4), dtype=np.float32)
         self._last_target_gate = np.array(obs["target_gate"], dtype=np.int32)
         
         return obs, info
     
     def step(self, action):
-        # 转换动作格式
+        # Convert action format
         action_array = np.array(action, dtype=np.float32).reshape(self.num_envs, -1)
         
-        # 环境步进
+        # Environment step
         obs, _, terminated, truncated, info = self.env.step(action)
         
-        # 计算新奖励
+        # Compute new reward
         reward = self._compute_reward(obs, action_array, terminated, truncated)
         
-        # 更新状态
+        # Update state
         self._update_state(obs, action_array)
         
         return obs, reward, terminated, truncated, info
@@ -117,77 +117,86 @@ class RacingRewardWrapper(VectorWrapper):
         target_gate = np.array(obs["target_gate"])
         pos = np.array(obs["pos"])
         
-        # 1. 计算距离
+        # 1. Compute distance
         curr_dist = self._compute_dist_to_gate(obs)
         
-        # ========== 核心: 差分进度奖励 (Potential-based) ==========
-        # (上一步距离 - 当前距离)
-        # 正值 = 靠近目标; 负值 = 远离目标
+        # ========== Core: Differential Progress Reward (Potential-based) ==========
+        # (previous distance - current distance)
+        # positive = approaching target; negative = moving away from target
         dist_diff = self._last_dist_to_gate - curr_dist
 
-        # 处理过门跳变:
-        # 如果过门了，目标变了，距离会突然变大。这一步我们不计算差分奖励，避免巨大的负惩罚。
-        # 完赛时 (target=-1) 也不计算
+        # Handle gate transition:
+        # If gate passed, target changed, distance will suddenly increase. We don't compute differential reward in this step to avoid huge negative penalty.
+        # Also don't compute when finished (target=-1)
         gate_changed = (target_gate != self._last_target_gate)
         finished = (target_gate == -1)
 
         r_progress = np.where(gate_changed | finished, 0.0, dist_diff)
 
-        # Clip progress based on max velocity threshold (2.5 m/s)
-        # At 50 Hz (0.02s per step): max_distance = 2.5 m/s * 0.02s = 0.05 m
-        max_progress_per_step = 0.05  # meters
-        r_progress = np.clip(r_progress, -max_progress_per_step, max_progress_per_step)
+        # Velocity-based penalty for progress reward (instead of clipping)
+        # When velocity exceeds threshold, linearly penalize the progress reward
+        max_velocity_threshold = 1  # meters per second
+        dt = 0.02  # Assuming 50 Hz update rate
 
-        r_progress = r_progress * self.coefs["progress"]
+        # Estimate velocity from distance change
+        velocity = np.abs(dist_diff) / dt  # m/s
+
+        # Linear penalty: penalty_factor = 1.0 when v <= max_vel, decreases linearly when v > max_vel
+        # penalty_factor = max(0, 1 - (v - max_vel) / max_vel)
+        # This means at 2x max_vel, penalty_factor = 0 (no progress reward)
+        excess_velocity = np.maximum(0.0, velocity - max_velocity_threshold)
+        penalty_factor = np.maximum(0.0, 1.0 - excess_velocity / max_velocity_threshold)
+
+        r_progress = r_progress * penalty_factor * self.coefs["progress"]
         
-        # ========== 2. 过门与完赛奖励 (修改版) ==========
-        # 检测是否刚过门 (target_gate 增加代表过门)
+        # ========== 2. Gate Passing and Completion Reward (Modified Version) ==========
+        # Detect if just passed gate (target_gate increase means gate passed)
         passed_gate = (target_gate > self._last_target_gate) & (self._last_target_gate >= 0)
 
-        # 计算递增奖励: (门索引 + 1) * 20
-        # 穿过第0个门(索引0)奖励 20，第1个门奖励 40... 以此类推
+        # Compute incremental reward: (gate index + 1) * 20
+        # Passing gate 0 (index 0) rewards 20, gate 1 rewards 40... and so on
         incremental_reward = (self._last_target_gate.astype(np.float32) + 1) * self.coefs["gate"]
         r_gate = np.where(passed_gate, incremental_reward, 0.0)
 
-        # 完赛奖励 (如果是最后一个门)
+        # Completion reward (if it's the last gate)
         just_finished = (target_gate == -1) & (self._last_target_gate != -1)
-        # 如果第四个门(索引3)是最后一个，完赛奖励可以设为 100 或者更高
+        # If gate 4 (index 3) is the last one, completion reward can be set to 100 or higher
         r_finish = np.where(just_finished, self.coefs["finish"], 0.0)
         
-        # ========== 3. 时间惩罚 (Step Penalty) ==========
-        # 只要没完赛，每一步都扣分，逼它快跑
+        # ========== 3. Time Penalty (Step Penalty) ==========
+        # As long as not finished, deduct points every step to force fast flight
         p_time = np.where(finished, 0.0, self.coefs["time"])
         
-        # ========== 4. 起飞引导 (Altitude) ==========
-        # 如果在地上蹭 (z < 0.1)，给一个额外的负分，逼它飞起来
+        # ========== 4. Takeoff Guidance (Altitude) ==========
+        # If rubbing on ground (z < 0.1), give extra negative score to force it to fly
         z = pos[:, 2]
         on_ground = (z < 0.1) & ~finished
         p_ground = np.where(on_ground, 0.1, 0.0)
         
-        # ========== 5. 对齐奖励 (辅助) ==========
-        # 仅当速度足够大时计算，引导它对准门
+        # ========== 5. Alignment Reward (Auxiliary) ==========
+        # Only compute when velocity is large enough, guide it to aim at gate
         r_align = self._compute_align_reward(obs) * self.coefs["align"]
         
-        # ========== 6. 惩罚项 ==========
-        # 碰撞 (终止了但不是因为完赛或超时)
-        # 注意: VecDroneRaceEnv 在 step 限制到期时也会 terminated=True，需要排除
+        # ========== 6. Penalty Terms ==========
+        # Collision (terminated but not due to completion or timeout)
+        # Note: VecDroneRaceEnv also sets terminated=True when step limit expires, need to exclude
         is_crash = terminated & ~truncated & ~finished
         p_collision = np.where(is_crash, self.coefs["collision"], 0.0)
         
-        # 动作平滑 (防抖)
+        # Action smoothness (anti-jitter)
         action_diff = action - self._last_action
         p_smooth = self.coefs["smooth"] * np.sum(action_diff ** 2, axis=1)
         
-        # 角速度 (防震荡)
+        # Angular velocity (anti-oscillation)
         ang_vel = np.array(obs["ang_vel"])
         p_spin = self.coefs["spin"] * np.sum(ang_vel ** 2, axis=1)
         
-        # 姿态惩罚 (轻微): 只惩罚过大的 Roll/Pitch，防止翻车，但允许侧倾过弯
+        # Attitude penalty (light): Only penalize excessive Roll/Pitch to prevent flipping, but allow banking in turns
         quat = np.array(obs["quat"])
         rpy = Rotation.from_quat(quat).as_euler("xyz")
-        p_angle = self.coefs["angle"] * np.linalg.norm(rpy[:, :2], axis=-1) # 系数给很小
+        p_angle = self.coefs["angle"] * np.linalg.norm(rpy[:, :2], axis=-1) # Coefficient is very small
         
-        # ========== 总计 ==========
+        # ========== Total ==========
         reward = (
             r_progress 
             + r_gate 
@@ -212,20 +221,14 @@ class RacingRewardWrapper(VectorWrapper):
         self._ep_rewards["angle"] -= p_angle
         self._ep_rewards["total"] += reward
         
-        # Episode 结束时，记录并重置
+        # When episode ends, record and reset
         done_mask = terminated | truncated
         if np.any(done_mask):
             for key in self._ep_rewards:
-                # 记录结束的 episode 的累积值
+                # Record cumulative values of finished episodes
                 self._finished_episodes[key].extend(self._ep_rewards[key][done_mask].tolist())
-                # 重置这些环境
+                # Reset these environments
                 self._ep_rewards[key][done_mask] = 0.0
-
-        # print(f"last_dist={self._last_dist_to_gate[0]:.3f}, curr_dist={curr_dist[0]:.3f}, dist_diff={dist_diff[0]:.3f},  "
-        #         f"r_prog={r_progress[0]:.3f}, r_gate={r_gate[0]:.3f}, "
-        #         f"r_finish={r_finish[0]:.3f}, r_align={r_align[0]:.3f}, "
-        #         f"p_time={p_time[0]:.3f}, p_collision={p_collision[0]:.3f}, "
-        #         f"p_smooth={p_smooth[0]:.3f}, p_spin={p_spin[0]:.3f}")
         return reward.astype(np.float32)
 
     def _compute_dist_to_gate(self, obs: dict) -> NDArray:
@@ -236,43 +239,43 @@ class RacingRewardWrapper(VectorWrapper):
         safe_idx = np.clip(target_gate, 0, self.n_gates - 1)
         batch_idx = np.arange(self.num_envs)
         
-        # 获取当前目标门位置
+        # Get current target gate position
         current_gate_pos = gates_pos[batch_idx, safe_idx]
         
-        # 计算距离
+        # Compute distance
         dist = np.linalg.norm(pos - current_gate_pos, axis=1)
         return dist
 
     def _compute_align_reward(self, obs: dict) -> NDArray:
         """
-        简化版对齐奖励：仅鼓励速度与门法向量对齐
+        Simplified alignment reward: Only encourage velocity alignment with gate normal vector
         
-        让策略自己学习如何穿门，而不是手工设计路径。
+        Let the policy learn how to pass through gates itself, rather than hand-crafting paths.
         """
-        # 1. 提取数据
+        # 1. Extract data
         vel = np.array(obs["vel"])                      # (N, 3)
         gates_quat = np.array(obs["gates_quat"])        # (N, n_gates, 4)
         target_gate_idx = np.array(obs["target_gate"])  # (N,)
         
-        # 处理完赛状态
+        # Handle completion state
         valid_mask = (target_gate_idx != -1)
         safe_idx = np.clip(target_gate_idx, 0, self.n_gates - 1)
         
-        # 2. 获取目标门的法向量
+        # 2. Get target gate's normal vector
         batch_indices = np.arange(self.num_envs)
         curr_gate_quat = gates_quat[batch_indices, safe_idx]  # (N, 4)
         
         gate_rot = Rotation.from_quat(curr_gate_quat)
         gate_normal = gate_rot.apply(np.array([1.0, 0.0, 0.0]))  # (N, 3)
         
-        # 3. 计算速度与门法向量的对齐度
-        # Reward = v · n (速度在正确方向上的投影)
+        # 3. Compute alignment between velocity and gate normal vector
+        # Reward = v · n (projection of velocity in correct direction)
         align_reward = np.sum(vel * gate_normal, axis=1)
         
-        # 4. 可选：缩放系数
+        # 4. Optional: scaling factor
         align_reward *= 0.5
         
-        # 5. 完赛后不给奖励
+        # 5. No reward after completion
         align_reward = np.where(valid_mask, align_reward, 0.0)
         
         return align_reward
@@ -283,4 +286,4 @@ class RacingRewardWrapper(VectorWrapper):
         self._last_target_gate = np.array(obs["target_gate"], dtype=np.int32)
         
     def set_stage(self, stage: int):
-        pass # 固定场景不需要 Stage 调整
+        pass # Fixed scenario doesn't need stage adjustment

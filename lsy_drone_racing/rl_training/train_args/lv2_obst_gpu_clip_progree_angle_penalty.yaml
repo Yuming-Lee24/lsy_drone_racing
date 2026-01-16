@@ -108,7 +108,7 @@ coef_gate:
 coef_progress:
     value: 60
 coef_smooth:
-    value: 0.0
+    value: 0.5
 coef_spin:
     value: 0.00
 coef_angle:
