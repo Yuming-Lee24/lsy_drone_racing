@@ -1,9 +1,9 @@
-"""PPO Racing Controller - 用于 sim.py 的推理控制器
+"""PPO Racing Controller - Inference controller for sim.py
 
-将训练好的 PPO checkpoint 适配到单环境推理接口。
-核心要点：观测处理逻辑必须与训练时的 RacingObservationWrapper 完全一致。
+Adapts trained PPO checkpoint to single-environment inference interface.
+Key point: Observation processing logic must be completely consistent with RacingObservationWrapper during training.
 
-使用方法:
+Usage:
     python scripts/sim.py --config level0_no_obst.toml --controller ppo_racing_controller.py
 """
 
@@ -25,23 +25,23 @@ if TYPE_CHECKING:
 
 
 # ============================================================================
-# 网络定义 (与 ppo_racing.py 完全一致)
+# Network Definition (completely consistent with ppo_racing.py)
 # ============================================================================
 
 def layer_init(layer: nn.Module, std: float = np.sqrt(2), bias_const: float = 0.0) -> nn.Module:
-    """正交初始化网络层。"""
+    """Orthogonal initialization of network layer."""
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
 
 class Agent(nn.Module):
-    """PPO Agent 网络 (与训练时完全一致)。"""
+    """PPO Agent Network (completely consistent with training)."""
     
     def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 256):
         super().__init__()
         
-        # Critic 网络
+        # Critic network
         self.critic = nn.Sequential(
             layer_init(nn.Linear(obs_dim, hidden_dim)),
             nn.Tanh(),
@@ -50,7 +50,7 @@ class Agent(nn.Module):
             layer_init(nn.Linear(hidden_dim, 1), std=1.0),
         )
         
-        # Actor 网络
+        # Actor network
         self.actor_mean = nn.Sequential(
             layer_init(nn.Linear(obs_dim, hidden_dim)),
             nn.Tanh(),
@@ -60,7 +60,7 @@ class Agent(nn.Module):
             nn.Tanh(),
         )
         
-        # 动作标准差
+        # Action standard deviation
         if action_dim == 4:
             init_logstd = torch.tensor([[-1.0, -1.0, -1.0, -0.5]])
         self.actor_logstd = nn.Parameter(init_logstd)
@@ -89,27 +89,27 @@ class Agent(nn.Module):
 
 
 # ============================================================================
-# 观测处理 (单环境版本，与 RacingObservationWrapper 逻辑一致)
+# Observation Processing (single-environment version, consistent with RacingObservationWrapper logic)
 # ============================================================================
 
 class ObservationProcessor:
-    """单环境观测处理器，复刻 RacingObservationWrapper 的逻辑。
+    """Single-environment observation processor, replicates RacingObservationWrapper logic.
     
-    关键时序：
-    - 训练时，历史在 step 开始时用上一步的 obs 更新
-    - prev_action 在 step 结束时更新
-    - 这里需要精确复刻这个时序
+    Key timing:
+    - During training, history is updated at the start of step using the previous step's obs
+    - prev_action is updated at the end of step
+    - Here we need to precisely replicate this timing
     """
     
-    # 门的局部坐标系下 4 个角点偏移
+    # 4 corner offsets in gate local coordinate system
     GATE_CORNERS_LOCAL = np.array([
-        [0.0, -0.2,  0.2],  # 左上
-        [0.0,  0.2,  0.2],  # 右上
-        [0.0,  0.2, -0.2],  # 右下
-        [0.0, -0.2, -0.2],  # 左下
+        [0.0, -0.2,  0.2],  # Top left
+        [0.0,  0.2,  0.2],  # Top right
+        [0.0,  0.2, -0.2],  # Bottom right
+        [0.0, -0.2, -0.2],  # Bottom left
     ], dtype=np.float32)
     
-    # 维度常量
+    # Dimension constants
     BASE_OBS_DIM = 56
     HISTORY_STATE_DIM = 16  # pos_z(1) + rot_mat(9) + vel(3) + ang_vel(3)
     
@@ -127,46 +127,46 @@ class ObservationProcessor:
         
         self.OBS_DIM = self.BASE_OBS_DIM + n_history * self.HISTORY_STATE_DIM
         
-        # 内部状态
+        # Internal state
         self._prev_action = np.zeros(4, dtype=np.float32)
         self._history_buffer = np.zeros((n_history, self.HISTORY_STATE_DIM), dtype=np.float32)
         self._initialized = False
         
-        # 用于延迟更新历史的缓存
-        # 训练时：step 开始时用上一步的 obs 更新历史
-        # 所以我们需要缓存 compute_control 时的 obs，在下一次 compute_control 时更新历史
+        # Cache for delayed history update
+        # During training: history is updated at the start of step using previous step's obs
+        # So we need to cache the obs from compute_control and update history on the next compute_control
         self._pending_history_obs = None
     
     def reset(self, obs: dict):
-        """重置内部状态。"""
+        """Reset internal state."""
         self._prev_action = np.zeros(4, dtype=np.float32)
         
-        # 用初始状态填充历史缓冲区
+        # Fill history buffer with initial state
         init_state = self._extract_basic_state(obs)
         for i in range(self.n_history):
             self._history_buffer[i] = init_state
         
-        # 重置缓存
+        # Reset cache
         self._pending_history_obs = None
         self._initialized = True
     
     def process(self, obs: dict) -> NDArray:
-        """将观测字典转换为向量 (单环境版本)。
+        """Convert observation dictionary to vector (single-environment version).
         
-        时序说明：
-        - 首先检查是否有待更新的历史（上一次 compute_control 的 obs）
-        - 然后用当前的 history 和 prev_action 生成观测
-        - 最后缓存当前 obs 用于下一次更新历史
+        Timing explanation:
+        - First check if there's pending history to update (obs from last compute_control)
+        - Then generate observation using current history and prev_action
+        - Finally cache current obs for next history update
         """
         if not self._initialized:
             self.reset(obs)
         
-        # 先用缓存的 obs 更新历史（如果有的话）
-        # 这复刻了训练时 step 开始时用 cache 更新历史的逻辑
+        # First update history with cached obs (if available)
+        # This replicates the training logic of updating history at step start using cache
         if self._pending_history_obs is not None:
             self._update_history_buffer(self._pending_history_obs)
         
-        # 1. 提取原始数据
+        # 1. Extract raw data
         pos = np.array(obs["pos"])                    # (3,)
         pos_z = pos[2:3]                              # (1,)
         vel = np.array(obs["vel"])                    # (3,)
@@ -177,16 +177,16 @@ class ObservationProcessor:
         gates_quat = np.array(obs["gates_quat"])      # (n_gates, 4)
         obstacles_pos = np.array(obs["obstacles_pos"])  # (n_obstacles, 3)
         
-        # 2. 计算无人机姿态
+        # 2. Compute drone attitude
         rot_matrix = Rotation.from_quat(quat).as_matrix()  # (3, 3)
         rot_matrix_flat = rot_matrix.flatten()             # (9,)
         vel_body = self._world_to_body(vel, rot_matrix)    # (3,)
         
-        # 3. 计算门角点 (机体坐标)
+        # 3. Compute gate corners (body coordinates)
         gate1_idx = np.clip(target_gate, 0, self.n_gates - 1)
         gate2_idx = np.clip(target_gate + 1, 0, self.n_gates - 1)
         
-        if target_gate == -1:  # 已完赛
+        if target_gate == -1:  # Finished
             gate1_idx = self.n_gates - 1
             gate2_idx = self.n_gates - 1
         
@@ -197,10 +197,10 @@ class ObservationProcessor:
             gates_pos[gate2_idx], gates_quat[gate2_idx], pos, rot_matrix
         )
         
-        # 4. 计算障碍物位置 (机体坐标)
+        # 4. Compute obstacle positions (body coordinates)
         obstacles_body = self._compute_obstacles_body(obstacles_pos, pos, rot_matrix)
         
-        # 5. 拼接观测向量
+        # 5. Concatenate observation vector
         obs_parts = [
             pos_z,              # 1D
             vel_body,           # 3D
@@ -212,27 +212,27 @@ class ObservationProcessor:
             obstacles_body,     # 12D
         ]
         
-        # 6. 添加历史状态
+        # 6. Add historical states
         if self.n_history > 0:
             history_flat = self._history_buffer.flatten()
             obs_parts.append(history_flat)
         
         obs_vector = np.concatenate(obs_parts)
         
-        # 7. 课程学习 Masking
+        # 7. Curriculum learning masking
         obs_vector = self._apply_stage_masking(obs_vector)
         
-        # 缓存当前 obs，用于下一次 process 时更新历史
+        # Cache current obs for next process call to update history
         self._pending_history_obs = obs
         
         return obs_vector.astype(np.float32)
     
     def update_prev_action(self, action_raw: NDArray):
-        """更新 prev_action (在 step_callback 中调用)。"""
+        """Update prev_action (called in step_callback)."""
         self._prev_action = action_raw.copy()
     
     def _update_history_buffer(self, obs: dict):
-        """更新历史缓冲区。"""
+        """Update history buffer."""
         current_state = self._extract_basic_state(obs)
         self._history_buffer = np.concatenate([
             self._history_buffer[1:],
@@ -240,7 +240,7 @@ class ObservationProcessor:
         ], axis=0)
     
     def _extract_basic_state(self, obs: dict) -> NDArray:
-        """提取基础状态 (pos_z + rot_mat + vel + ang_vel)。"""
+        """Extract basic state (pos_z + rot_mat + vel + ang_vel)."""
         pos = np.array(obs["pos"])
         quat = np.array(obs["quat"])
         vel = np.array(obs["vel"])
@@ -253,7 +253,7 @@ class ObservationProcessor:
         return np.concatenate([pos_z, rot_flat, vel, ang_vel])  # (16,)
     
     def _world_to_body(self, vec_world: NDArray, rot_matrix: NDArray) -> NDArray:
-        """世界坐标 -> 机体坐标。"""
+        """World coordinates -> Body coordinates."""
         return rot_matrix.T @ vec_world
     
     def _compute_gate_corners_body(
@@ -263,16 +263,16 @@ class ObservationProcessor:
         drone_pos: NDArray,
         drone_rot: NDArray,
     ) -> NDArray:
-        """计算门的 4 个角点在机体坐标系下的位置。"""
+        """Compute positions of gate's 4 corners in body coordinate system."""
         gate_rot = Rotation.from_quat(gate_quat).as_matrix()
         
-        # 角点在世界坐标系下的位置
+        # Corner positions in world coordinates
         corners_world = (gate_rot @ self.GATE_CORNERS_LOCAL.T).T + gate_pos
         
-        # 相对于无人机的位置
+        # Positions relative to drone
         corners_rel = corners_world - drone_pos
         
-        # 转换到机体坐标系
+        # Convert to body coordinates
         corners_body = (drone_rot.T @ corners_rel.T).T
         
         return corners_body.flatten()  # (12,)
@@ -283,11 +283,11 @@ class ObservationProcessor:
         drone_pos: NDArray,
         drone_rot: NDArray,
     ) -> NDArray:
-        """计算障碍物在机体坐标系下的相对位置。"""
+        """Compute relative positions of obstacles in body coordinate system."""
         if obstacles_pos.size == 0 or obstacles_pos.shape[0] == 0:
             return np.full(12, 10.0, dtype=np.float32)
         
-        # 使用障碍物轴线上距离无人机最近的点
+        # Use the closest point on obstacle axis to the drone
         obs_x = obstacles_pos[:, 0]
         obs_y = obstacles_pos[:, 1]
         obs_z_top = obstacles_pos[:, 2]
@@ -297,13 +297,13 @@ class ObservationProcessor:
         
         effective_obs_pos = np.stack([obs_x, obs_y, effective_obs_z], axis=-1)
         
-        # 计算相对位置
+        # Compute relative position
         rel_world = effective_obs_pos - drone_pos
         
-        # 旋转到机体坐标系
+        # Rotate to body coordinates
         rel_body = (drone_rot.T @ rel_world.T).T
         
-        # 按距离排序取最近的 4 个
+        # Sort by distance and take closest 4
         dists = np.linalg.norm(rel_body, axis=1)
         sorted_idx = np.argsort(dists)
         
@@ -314,43 +314,43 @@ class ObservationProcessor:
         return result
     
     def _apply_stage_masking(self, obs_vector: NDArray) -> NDArray:
-        """根据 stage 进行观测 masking。"""
+        """Apply observation masking based on stage."""
         obs_vector = obs_vector.copy()
         
         if self.stage == 0:
-            # Stage 0: 屏蔽 gate2 和障碍物
+            # Stage 0: Mask gate2 and obstacles
             obs_vector[28:40] = obs_vector[16:28]
             obs_vector[44:56] = 10.0
         elif self.stage == 1:
-            # Stage 1: 只屏蔽障碍物
+            # Stage 1: Only mask obstacles
             obs_vector[44:56] = 10.0
-        # Stage 2: 全开
+        # Stage 2: All enabled
         
         return obs_vector
 
 
 # ============================================================================
-# Controller 实现
+# Controller Implementation
 # ============================================================================
 
 class PPORacingController(Controller):
-    """PPO Racing Controller - 使用训练好的 PPO 网络进行控制。"""
+    """PPO Racing Controller - Uses trained PPO network for control."""
     
     def __init__(self, obs: dict[str, NDArray], info: dict, config: dict):
         super().__init__(obs, info, config)
         
-        # ---------- 配置参数 ----------
+        # ---------- Configuration Parameters ----------
         self.n_gates = 4
         self.n_obstacles = 4
         self.n_history = 2
         self.hidden_dim = 256
         self.stage = 2
         
-        # 计算观测维度
+        # Calculate observation dimension
         self.obs_dim = 56 + self.n_history * 16  # 88
         self.action_dim = 4
         
-        # ---------- 动作缩放参数 ----------
+        # ---------- Action Scaling Parameters ----------
         params = ForceTorqueParams.load(config.sim.drone_model)
         self.thrust_min = 0.2
         self.thrust_max = 0.8
@@ -370,7 +370,7 @@ class PPORacingController(Controller):
         print(f"[PPORacingController] action_low: {self.action_low}")
         print(f"[PPORacingController] action_high: {self.action_high}")
         
-        # ---------- 观测处理器 ----------
+        # ---------- Observation Processor ----------
         self.obs_processor = ObservationProcessor(
             n_gates=self.n_gates,
             n_obstacles=self.n_obstacles,
@@ -378,12 +378,12 @@ class PPORacingController(Controller):
             n_history=self.n_history,
         )
         
-        # ---------- 加载网络 ----------
+        # ---------- Load Network ----------
         self.device = torch.device("cpu")
         self.agent = Agent(self.obs_dim, self.action_dim, self.hidden_dim).to(self.device)
         
         root_dir = Path(__file__).resolve().parent.parent
-        model_path = root_dir / "rl_training" / "checkpoints" / "lv2_obst_54_6800ms_clip_1_angle_penalty_1.5_happy-leaf.ckpt"
+        model_path = root_dir / "rl_training" / "checkpoints" / "lv2_fast_policy.ckpt"
         
         print(f"[PPORacingController] Loading model from: {model_path}")
         
@@ -399,7 +399,7 @@ class PPORacingController(Controller):
         
         self.agent.eval()
         
-        # ---------- 初始化观测处理器 ----------
+        # ---------- Initialize Observation Processor ----------
         self.obs_processor.reset(obs)
         
         self._finished = False
@@ -407,30 +407,30 @@ class PPORacingController(Controller):
     def compute_control(
         self, obs: dict[str, NDArray], info: dict | None = None
     ) -> NDArray:
-        """计算控制指令。"""
-        # 检查是否完赛
+        """Compute control command."""
+        # Check if finished
         if obs["target_gate"] == -1:
             self._finished = True
         
-        # 1. 处理观测（内部会处理历史更新的时序）
+        # 1. Process observation (internally handles history update timing)
         obs_vector = self.obs_processor.process(obs)
         obs_tensor = torch.tensor(obs_vector, dtype=torch.float32).unsqueeze(0).to(self.device)
         
-        # 2. 网络推理
+        # 2. Network inference
         with torch.no_grad():
             action_raw, _, _, _ = self.agent.get_action_and_value(obs_tensor, deterministic=True)
             action_raw = action_raw.squeeze(0).cpu().numpy()
         
-        # 3. 动作缩放: [-1, 1] -> [low, high]
+        # 3. Action scaling: [-1, 1] -> [low, high]
         action = self._scale_action(action_raw)
         
-        # 4. 缓存 raw action 用于 step_callback 更新 prev_action
+        # 4. Cache raw action for step_callback to update prev_action
         self._cached_action_raw = action_raw
         
         return action.astype(np.float32)
     
     def _scale_action(self, action_raw: NDArray) -> NDArray:
-        """将网络输出 [-1, 1] 缩放到真实动作范围。"""
+        """Scale network output [-1, 1] to actual action range."""
         action_clipped = np.clip(action_raw, -1.0, 1.0)
         return action_clipped * self.action_scale + self.action_mean
     
@@ -443,22 +443,22 @@ class PPORacingController(Controller):
         truncated: bool,
         info: dict,
     ) -> bool:
-        """每步回调 - 更新 prev_action。
+        """Per-step callback - update prev_action.
         
-        注意：历史更新在下一次 compute_control 中进行（复刻训练时的时序）。
+        Note: History update happens in next compute_control (replicates training timing).
         """
-        # 更新 prev_action（用缓存的 raw action）
+        # Update prev_action (using cached raw action)
         if hasattr(self, '_cached_action_raw'):
             self.obs_processor.update_prev_action(self._cached_action_raw)
         
         return self._finished
     
     def episode_callback(self):
-        """Episode 结束回调。"""
+        """Episode end callback."""
         pass
     
     def episode_reset(self):
-        """重置 episode 状态。"""
+        """Reset episode state."""
         self._finished = False
         self.obs_processor._initialized = False
         self.obs_processor._pending_history_obs = None

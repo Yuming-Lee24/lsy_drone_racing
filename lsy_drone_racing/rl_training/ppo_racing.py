@@ -56,11 +56,11 @@ from gymnasium.wrappers.vector.jax_to_torch import JaxToTorch
 
 # Custom Wrappers
 # from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
-from lsy_drone_racing.rl_training.wrappers.observation_dev import RacingObservationWrapper
+from lsy_drone_racing.rl_training.wrappers.observation import RacingObservationWrapper
 
 from lsy_drone_racing.rl_training.wrappers.reward import RacingRewardWrapper as BaseRewardWrapper
 # from lsy_drone_racing.rl_training.wrappers.reward_racing_lv1 import RacingRewardWrapper as RacingRewardWrapperLv1
-from lsy_drone_racing.rl_training.wrappers.reward_racing_progress_clip_vel_angle_penalty import RacingRewardWrapper as RacingRewardWrapperLv1
+from lsy_drone_racing.rl_training.wrappers.reward_racing_progress_clip import RacingRewardWrapper as RacingRewardWrapperLv1
 
 
 # ============================================================================

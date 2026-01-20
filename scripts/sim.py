@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def simulate(
-    config: str = "level1.toml",
+    config: str = "level2.toml",
     controller: str | None = None,
     n_runs: int = 1,
     render: bool | None = None,
@@ -74,11 +74,14 @@ def simulate(
     env = JaxToNumpy(env)
 
     ep_times = []
+    success_count = 0
+    success_steps = []
+
     for _ in range(n_runs):  # Run n_runs episodes with the controller
         obs, info = env.reset()
         controller: Controller = controller_cls(obs, info, config)
         i = 0
-        fps = 30
+        fps = 60
 
         while True:
             curr_time = i / config.env.freq
@@ -102,13 +105,33 @@ def simulate(
                 if ((i * fps) % config.env.freq) < fps:
                     # draw_line(env,controller.get_trajectory_waypoints())
                     env.render()
-                    time.sleep(0.02) 
+                    time.sleep(0.02)
             i += 1
 
         controller.episode_callback()  # Update the controller internal state and models.
         log_episode_stats(obs, info, config, curr_time)
         controller.episode_reset()
-        ep_times.append(curr_time if obs["target_gate"] == -1 else None)
+
+        # Track success statistics
+        is_success = obs["target_gate"] == -1
+        if is_success:
+            success_count += 1
+            success_steps.append(i)
+
+        ep_times.append(curr_time if is_success else None)
+
+    # Log overall statistics
+    success_rate = success_count / n_runs * 100
+    avg_success_steps = np.mean(success_steps) if success_steps else 0
+    logger.info(
+        f"\n{'='*50}\n"
+        f"Overall Statistics:\n"
+        f"  Total episodes: {n_runs}\n"
+        f"  Success count: {success_count}\n"
+        f"  Success rate: {success_rate:.2f}%\n"
+        f"  Avg steps (success only): {avg_success_steps:.1f}\n"
+        f"{'='*50}"
+    )
 
     # Close the environment
     env.close()
