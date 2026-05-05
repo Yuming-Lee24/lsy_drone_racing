@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0.0", "wheel", "numpy>=2.0.0"]
+requires = ["setuptools>=61.0.0,<70", "wheel", "numpy>=2.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -29,20 +29,22 @@ dependencies = ["fire >= 0.6.0", "numpy", "toml >= 0.10.2"]
 sim = [
     "gymnasium[array-api] >= 1.2.0",
     "ml-collections >= 1.0",
-    "packaging >= 24.0",
+    # "packaging ",
     "drone-models",
     "drone-controllers",
     "crazyflow>=0.1.0",
     "jax >= 0.7",
     "warp-lang",
+    # Pin transitive dep to a version with Python 3.13 wheels.
+    # Without this, wandb (in `tests` solve-group) lifts protobuf to 7.x, which
+    # forces the resolver back to grpcio-tools 1.30.0 (2020, no py3.13 wheel,
+    # setup.py imports removed-from-setuptools pkg_resources).
+    "grpcio-tools>=1.62",
 ]
 # option[gpu]: simulation with gpu
 gpu = ["jax[cuda12]"]
 # option[deploy]: deploy to real drones
-deploy = [
-    "cfclient",
-    "drone-estimators",
-]
+deploy = ["cfclient>=2025.9,<2026", "cflib==0.1.31", "drone-estimators"]
 # option[rl]: train rl policy
 rl = ["torch == 2.8.0", "wandb"]
 # option[gamepad]: use a gamepad as input for your drone
@@ -55,7 +57,7 @@ find = {}
 lsy_drone_racing = ["envs/assets/*.xml", "envs/assets/*.png"]
 
 [tool.pytest.ini_options]
-markers = ["unit", "integration"]
+markers = ["unit", "integration", "deployment"]
 
 ########################
 # Pixi Sessions
@@ -67,6 +69,7 @@ platforms = ["linux-64"]
 [tool.pixi.dependencies]
 python = ">=3.11.12,<3.14"
 pip = ">=25.0.1,<26"
+packaging = ">=25,<26"
 ruff = "*"
 # Compilers needed for acados
 cmake = "*"
@@ -87,6 +90,7 @@ evaluate = { cmd = "python scripts/evaluate.py", description = "Evaluate the con
 [tool.pixi.environments]
 default = { features = ["sim"], solve-group = "default" }
 deploy = { features = ["sim", "gpu", "kilted", "deploy"] }
+deploy-tests = { features = ["sim", "gpu", "kilted", "deploy", "tests"] }
 gpu = { features = ["sim", "gpu"], solve-group = "default" }
 tests = { features = ["sim", "rl", "tests"], solve-group = "default" }
 gpu-tests = { features = ["sim", "gpu", "tests"], solve-group = "default" }
@@ -157,7 +161,7 @@ ignore = ["ANN401"]
 fixable = ["ALL"]
 unfixable = []
 
-[tool.ruff.lint.isort]  # Prevent ruff from reporting conflicting settings with isort
+[tool.ruff.lint.isort] # Prevent ruff from reporting conflicting settings with isort
 split-on-trailing-comma = false
 
 [tool.ruff.lint.per-file-ignores]
