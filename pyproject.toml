@@ -108,6 +108,7 @@ cmake = "*"
 pkg-config = "*"
 make = "*"
 ninja = "*"
+libboost-devel = ">=1.86,<1.87"
 # ROS specific tools
 rosdep = "*"
 colcon-common-extensions = "*"
