@@ -82,18 +82,17 @@ def simulate(
         while True:
             curr_time = i / config.env.freq
 
-            t_start = time.perf_counter()
+            t_loop = time.perf_counter()
             action = controller.compute_control(obs, info)
-            control_time = time.perf_counter() - t_start
+            control_time = time.perf_counter() - t_loop
 
             obs, reward, terminated, truncated, info = env.step(action)
             # Update the controller internal state and models.
-            t_start = time.perf_counter()
+            t_callback = time.perf_counter()
             controller_finished = controller.step_callback(
                 action, obs, reward, terminated, truncated, info
             )
-            control_time += time.perf_counter() - t_start
-            if (exc := control_time - 1 / config.env.freq) > 0:
+            if (exc := time.perf_counter() - t_callback + control_time - 1 / config.env.freq) > 0:
                 logger.warning(f"Controller execution time exceeded loop frequency by {exc:.3f}s.")
             # Add up reward, collisions
             if terminated or truncated or controller_finished:
