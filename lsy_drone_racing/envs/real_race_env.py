@@ -181,8 +181,6 @@ class RealRaceCoreEnv:
         self.data.target_gate[self.data.target_gate >= self.n_gates] = -1
         self.data.last_drone_pos[...] = drone_pos
         self.data.taken_off |= drone_pos[self.rank, 2] > 0.1
-        # Vicon position updates are streamed to the drone estimator on a background thread by the
-        # Crazyflie wrapper at a fixed frequency, decoupled from this control loop.
         return self.obs(), self.reward(), self.terminated(), self.truncated(), self.info()
 
     def obs(self) -> dict[str, NDArray]:

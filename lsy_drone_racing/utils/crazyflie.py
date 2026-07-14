@@ -107,22 +107,17 @@ class Crazyflie:
         return self._cf is not None
 
     def connect(self, timeout: float = 10.0) -> None:
-        """Connect to the Crazyflie."""
+        """Connect to the Crazyflie and start streaming mocap poses to its estimator."""
         self._run(self._connect, timeout)
+        self._start_estimator_updater()
 
     def reset(self, arm: bool = False) -> None:
-        """Apply race settings, reset the estimator, and optionally arm the drone.
-
-        After the settings, estimator reset, and arming have been applied synchronously, the
-        background estimator updater is started so mocap poses are streamed to the drone at a
-        fixed frequency, decoupled from the main control loop.
-        """
+        """Apply race settings, reset the estimator, and optionally arm the drone."""
         self._run(self._apply_settings)
         self._run(self._reset_estimator)
         if arm:
             self._run(self._arm)
             self._run(self._unlock_thrust)
-        self._start_estimator_updater()
 
     def send_external_pose(self) -> None:
         """Send an external mocap pose to the Crazyflie estimator."""
@@ -179,8 +174,6 @@ class Crazyflie:
         self._run(self._prepare_high_level)
 
         def wait_for_action(duration: float) -> None:
-            # The background estimator updater keeps streaming mocap poses during the return, so no
-            # manual send_external_pose() is needed here.
             end_time = self._loop.time() + duration
             while self._loop.time() < end_time:
                 if check_ok is not None and not check_ok():
@@ -221,10 +214,13 @@ class Crazyflie:
         self._run(self._emergency_stop)
 
     def close(self, emergency_stop: bool = True) -> None:
-        """Stop the estimator updater, emergency-stop, disconnect, and close the event loop."""
+        """Emergency-stop, stop the estimator updater, disconnect, and close the event loop."""
         if self._loop.is_closed():
             return
         try:
+            if emergency_stop and self.is_connected:
+                self._run(self._emergency_stop)
+                self._run(asyncio.sleep, 0.1)
             if self._estimator_stop_event is not None:
                 self._estimator_stop_event.set()
             if self._estimator_future is not None:
@@ -232,11 +228,6 @@ class Crazyflie:
                     self._estimator_future.result(timeout=max(1.0, 2 / self.update_freq))
                 except Exception as exc:
                     logger.warning(f"Stopping estimator updater failed: {exc}")
-
-            if emergency_stop and self.is_connected:
-                self._run(self._emergency_stop)
-                self._run(asyncio.sleep, 0.1)
-
             if self._cf is not None:
                 self._run(self._disconnect)
         finally:
