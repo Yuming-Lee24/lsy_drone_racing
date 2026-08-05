@@ -54,7 +54,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
     try:
         if render:
             viewer_sim_config = config.sim.copy_and_resolve_references()
-            viewer_sim_config.drone_model = config.deploy.drones[0]["drone_model"]
+            viewer_sim_config.drone = config.deploy.drones[0]["drone"]
             viewer_sim_config.camera = -1
             viewer_env = RaceCoreEnv(
                 n_envs=1,
@@ -73,7 +73,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         obs, info = env.reset(seed=config.env.seed, options=config.deploy)
         next_obs = obs  # Set next_obs to avoid errors when the loop never enters
 
-        if viewer is not None:
+        if render:
             viewer.set_track(
                 gates_pos=env.unwrapped.gates.pos,
                 gates_quat=env.unwrapped.gates.quat,
@@ -92,7 +92,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
             obs = {k: v[0] for k, v in obs.items()}
             action = controller.compute_control(obs, info)
             next_obs, reward, terminated, truncated, info = env.step(action)
-            if viewer is not None:
+            if render:
                 viewer.update(next_obs["pos"], next_obs["quat"])
             controller_finished = controller.step_callback(
                 action, next_obs, reward, terminated, truncated, info
