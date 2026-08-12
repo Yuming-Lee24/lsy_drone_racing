@@ -36,6 +36,7 @@ from lsy_drone_racing.rl_training.level3_rewards import (
     level3_reward,
 )
 from lsy_drone_racing.rl_training.level3_runtime import belief_observation, true_observation
+from lsy_drone_racing.rl_training.level3_segment_reset import apply_level3_segment_reset
 from lsy_drone_racing.rl_training.networks import (
     deterministic_action,
     sample_action,
@@ -64,6 +65,7 @@ class Level3RunnerState:
     reward_state: Level3RewardState
     actor_observation: ActorObservation
     critic_observation: CriticObservation
+    episode_start_progress: Array
     rng: Array
 
 
@@ -80,6 +82,9 @@ class Level3RolloutMetrics:
     ground_collision: Array
     boundary_collision: Array
     failed_gate: Array
+    episode_start_progress: Array
+    final_progress: Array
+    target_gate_passed: Array
     difficulty: Array
     gate_position: Array
     gate_prediction_safe: Array
@@ -161,20 +166,54 @@ def _actor_features(
 
 
 def initialize_level3_runner(
-    env: VecDroneRaceEnv, config: Level3PPOConfig, seed: int | None = None
+    env: VecDroneRaceEnv,
+    config: Level3PPOConfig,
+    seed: int | None = None,
+    *,
+    mixed_segment: bool | None = None,
 ) -> Level3RunnerState:
     """Reset Level 3 at curriculum progress zero and build both observation streams."""
     seed = config.seed if seed is None else seed
+    mixed_segment = config.segment_reset.enabled if mixed_segment is None else mixed_segment
+    if (
+        config.segment_reset.enabled
+        and env.settings.freq != config.segment_reset.environment_frequency
+    ):
+        raise ValueError(
+            "level3_v2_segment elapsed-time initialization requires the configured 50 Hz "
+            "environment frequency"
+        )
     initial_data = env.data.replace(
         curriculum_progress=jnp.asarray(0.0 if config.curriculum else 1.0, dtype=jnp.float32)
     )
     data, _ = env._reset(initial_data, seed=seed)
+    original_reset_belief = belief_observation(data)
+    data, episode_start_progress = apply_level3_segment_reset(
+        data, config, mixed_segment=mixed_segment
+    )
     belief = belief_observation(data)
     actual = true_observation(data)
     # Reset observations are the only nominal-map source guaranteed to exist in deployment. If an
     # object already starts inside sensor range, its exact pose is a valid anchor and its visited
     # flag still makes that fact explicit.
-    memory = initialize_level3_memory(belief)
+    memory = initialize_level3_memory(
+        belief,
+        nominal_gates_pos=jnp.where(
+            (episode_start_progress > 0)[:, None, None],
+            data.nominal_gates_pos,
+            original_reset_belief["gates_pos"],
+        ),
+        nominal_gates_quat=jnp.where(
+            (episode_start_progress > 0)[:, None, None],
+            data.nominal_gates_quat,
+            original_reset_belief["gates_quat"],
+        ),
+        nominal_obstacles_pos=jnp.where(
+            (episode_start_progress > 0)[:, None, None],
+            data.nominal_obstacles_pos,
+            original_reset_belief["obstacles_pos"],
+        ),
+    )
     actor = _actor_features(data, belief, memory, config)
     critic = _critic_features(env, data, belief, actor, memory, config)
     return Level3RunnerState(
@@ -185,12 +224,13 @@ def initialize_level3_runner(
         reward_state=initialize_level3_reward_state(actual, config.geometry),
         actor_observation=actor,
         critic_observation=critic,
+        episode_start_progress=episode_start_progress,
         rng=jax.random.key(seed),
     )
 
 
 def _build_level3_environment_step(
-    env: VecDroneRaceEnv, config: Level3PPOConfig
+    env: VecDroneRaceEnv, config: Level3PPOConfig, *, mixed_segment: bool
 ) -> Callable[[Level3RunnerState, Array], Level3EnvironmentTransition]:
     """Build the pure transition used inside rollout and evaluation scans."""
     apply_action = env.build_apply_action_fn()
@@ -225,13 +265,60 @@ def _build_level3_environment_step(
             obstacle_contact[:, 0],
         )
 
-    def reset_done(data: EnvData, done: Array) -> EnvData:
-        def perform_reset(value: tuple[EnvData, Array]) -> EnvData:
-            current_data, reset_mask = value
+    def reset_done(
+        data: EnvData, done: Array, episode_start_progress: Array, memory: Level3ObservationMemory
+    ) -> tuple[EnvData, Array, Array, Array, Array]:
+        def perform_reset(value: tuple) -> tuple[EnvData, Array, Array, Array, Array]:
+            current_data, reset_mask, current_start, current_memory = value
             reset_data, _ = reset_environment(current_data, seed=None, mask=reset_mask)
-            return reset_data
+            original_reset_belief = belief_observation(reset_data)
+            reset_data, reset_start = apply_level3_segment_reset(
+                reset_data, config, reset_mask, mixed_segment=mixed_segment
+            )
+            segment_mask = (reset_start > 0)[:, None, None]
+            reset_nominal_gates_pos = jnp.where(
+                segment_mask, reset_data.nominal_gates_pos, original_reset_belief["gates_pos"]
+            )
+            reset_nominal_gates_quat = jnp.where(
+                segment_mask, reset_data.nominal_gates_quat, original_reset_belief["gates_quat"]
+            )
+            reset_nominal_obstacles_pos = jnp.where(
+                segment_mask,
+                reset_data.nominal_obstacles_pos,
+                original_reset_belief["obstacles_pos"],
+            )
+            return (
+                reset_data,
+                jnp.where(reset_mask, reset_start, current_start),
+                jnp.where(
+                    reset_mask[:, None, None],
+                    reset_nominal_gates_pos,
+                    current_memory.nominal_gates_pos,
+                ),
+                jnp.where(
+                    reset_mask[:, None, None],
+                    reset_nominal_gates_quat,
+                    current_memory.nominal_gates_quat,
+                ),
+                jnp.where(
+                    reset_mask[:, None, None],
+                    reset_nominal_obstacles_pos,
+                    current_memory.nominal_obstacles_pos,
+                ),
+            )
 
-        return jax.lax.cond(done.any(), perform_reset, lambda value: value[0], (data, done))
+        return jax.lax.cond(
+            done.any(),
+            perform_reset,
+            lambda value: (
+                value[0],
+                value[2],
+                value[3].nominal_gates_pos,
+                value[3].nominal_gates_quat,
+                value[3].nominal_obstacles_pos,
+            ),
+            (data, done, episode_start_progress, memory),
+        )
 
     def transition(carry: Level3RunnerState, action: Array) -> Level3EnvironmentTransition:
         (
@@ -246,11 +333,24 @@ def _build_level3_environment_step(
         sequence_length = terminal_belief["gate_sequence"].shape[-1]
         success = terminal_belief["n_gates_passed"] >= sequence_length
         done = base_terminated | base_truncated | success
-        next_data = reset_done(terminal_data, done)
+        (
+            next_data,
+            next_episode_start_progress,
+            reset_nominal_gates_pos,
+            reset_nominal_gates_quat,
+            reset_nominal_obstacles_pos,
+        ) = reset_done(terminal_data, done, carry.episode_start_progress, carry.observation_memory)
         next_belief = belief_observation(next_data)
         next_actual = true_observation(next_data)
         next_memory, terminal_memory = advance_level3_memory(
-            carry.observation_memory, terminal_belief, next_belief, action, done
+            carry.observation_memory,
+            terminal_belief,
+            next_belief,
+            action,
+            done,
+            reset_nominal_gates_pos=reset_nominal_gates_pos,
+            reset_nominal_gates_quat=reset_nominal_gates_quat,
+            reset_nominal_obstacles_pos=reset_nominal_obstacles_pos,
         )
         terminal_actor = _actor_features(terminal_data, terminal_belief, terminal_memory, config)
         terminal_critic = _critic_features(
@@ -281,6 +381,7 @@ def _build_level3_environment_step(
                 reward_state=next_reward_state,
                 actor_observation=next_actor,
                 critic_observation=next_critic,
+                episode_start_progress=next_episode_start_progress,
                 rng=carry.rng,
             ),
             terminal_actor_observation=terminal_actor,
@@ -310,6 +411,18 @@ def _build_level3_environment_step(
                     terminal_actual["n_gates_passed"],
                     -jnp.ones_like(terminal_actual["n_gates_passed"]),
                 ),
+                episode_start_progress=jnp.where(
+                    reward_transition.done, carry.episode_start_progress, -1
+                ),
+                final_progress=jnp.where(
+                    reward_transition.done,
+                    terminal_actual["n_gates_passed"],
+                    -jnp.ones_like(terminal_actual["n_gates_passed"]),
+                ),
+                target_gate_passed=(
+                    reward_transition.done
+                    & (terminal_actual["n_gates_passed"] > carry.episode_start_progress)
+                ),
                 difficulty=jnp.where(reward_transition.done, terminal_data.difficulty, 0.0),
                 gate_position=gate_geometry.position,
                 gate_prediction_safe=(
@@ -329,7 +442,9 @@ def make_level3_functional_step(
     env: VecDroneRaceEnv, config: Level3PPOConfig
 ) -> Callable[[Level3RunnerState, Array], Level3EnvironmentTransition]:
     """Compile a policy-free Level 3 transition for mathematical integration tests."""
-    return jax.jit(_build_level3_environment_step(env, config))
+    return jax.jit(
+        _build_level3_environment_step(env, config, mixed_segment=config.segment_reset.enabled)
+    )
 
 
 def make_level3_rollout_collector(
@@ -340,7 +455,9 @@ def make_level3_rollout_collector(
     deterministic: bool = False,
 ) -> Callable[[Level3RunnerState, Any, Array], tuple[Level3RunnerState, Any, Any]]:
     """Compile policy, simulation, observation, reward, reset, and bootstrap in one scan."""
-    environment_transition = _build_level3_environment_step(env, config)
+    environment_transition = _build_level3_environment_step(
+        env, config, mixed_segment=config.segment_reset.enabled
+    )
 
     def collect(
         runner: Level3RunnerState, params: Any, curriculum_progress: Array
@@ -396,7 +513,8 @@ def make_level3_evaluation_collector(
     env: VecDroneRaceEnv, model: Level3ActorCritic, config: Level3PPOConfig
 ) -> Callable[[Level3RunnerState, Any], tuple[Level3RunnerState, Level3RolloutMetrics]]:
     """Compile deterministic Actor-only evaluation without materializing PPO samples."""
-    environment_transition = _build_level3_environment_step(env, config)
+    # Evaluation is always an original full-start race, even when loading a segment profile.
+    environment_transition = _build_level3_environment_step(env, config, mixed_segment=False)
 
     def collect(
         runner: Level3RunnerState, params: Any
@@ -443,4 +561,28 @@ def summarize_level3_rollout(metrics: Level3RolloutMetrics) -> dict[str, Array]:
             for name, value in zip(LEVEL3_REWARD_COMPONENTS, component_sums, strict=True)
         }
     )
+    for start in range(4):
+        start_mask = metrics.done & (metrics.episode_start_progress == start)
+        start_count = jnp.sum(start_mask)
+        start_denominator = jnp.maximum(start_count, 1)
+        summary.update(
+            {
+                f"segment/start_{start}_episodes": start_count,
+                f"segment/start_{start}_target_gate_pass_rate": (
+                    jnp.sum(metrics.target_gate_passed & start_mask) / start_denominator
+                ),
+                f"segment/start_{start}_remaining_track_success_rate": (
+                    jnp.sum(metrics.success & start_mask) / start_denominator
+                ),
+                f"segment/start_{start}_collision_rate": (
+                    jnp.sum(metrics.collision & start_mask) / start_denominator
+                ),
+                f"segment/start_{start}_timeout_rate": (
+                    jnp.sum(metrics.timeout & start_mask) / start_denominator
+                ),
+                f"segment/start_{start}_final_progress": (
+                    jnp.sum(jnp.where(start_mask, metrics.final_progress, 0)) / start_denominator
+                ),
+            }
+        )
     return summary

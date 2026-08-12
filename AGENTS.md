@@ -13,8 +13,10 @@ The active research objective is now a reliability-first structured V2 policy fo
 fully randomized Level 3 environment. The frozen design and current measured status are in
 `lsy_drone_racing/rl_training/LEVEL3_V2.md`; treat that document as authoritative for V2 feature,
 reward, curriculum, network, and evaluation semantics. The 50M reward4 pilot demonstrated stable
-gate completion but no full four-gate success; do not start the 500M run without explicit user
-authorization. The existing Level 2 V1 baseline remains supported and must not regress.
+gate completion but no full four-gate success. The active experiment is now the from-scratch
+`level3_v2_segment` mixed-start profile; do not launch its 50M pilot merely because implementation
+work is complete, and do not continue it to 500M without explicit user authorization. The existing
+Level 2 V1 baseline remains supported and must not regress.
 
 ## User constraints
 
@@ -78,6 +80,8 @@ dependencies change.
 - `lsy_drone_racing/rl_training/level3_*.py`: versioned Level 3 V2 config, structured
   observations/network, asymmetric PPO, reward, fused environment, checkpoint, evaluation,
   benchmark, and training lifecycle.
+- `lsy_drone_racing/rl_training/level3_segment_reset.py`: pure-JAX training-only mixed original/
+  gate-segment state generation.
 - `lsy_drone_racing/control/attitude_jax_ppo_level3.py`: V2 Actor-only deterministic controller.
 - `lsy_drone_racing/rl_training/LEVEL3_V2.md`: exact V2 implementation contract and current gates.
 - `config/level2.toml`: currently selects the JAX controller, `fast/latest`, and attitude mode.
@@ -244,7 +248,25 @@ fixed 500-scenario validation had 0 full successes; raw/EMA collision was 59.4%/
 passed gate one in 333/360 scenarios, and 29/25 reached gate three. This passes the required
 gate-completion/learning-direction pilot gate, but is not evidence of a successful Level 3 policy.
 The recommended full run is policy-only initialization from its EMA, with optimizer/environment/
-PRNG/curriculum reset. Do not launch 500M without explicit user authorization.
+PRNG/curriculum reset. This recommendation is superseded by the mixed-start experiment below.
+
+`level3_v2_segment` changes only the training reset distribution. Each reset independently samples
+the original start or a state just after gate one, two, or three with probability 0.25. The ordinary
+RaceCore reset still generates the entire random track, uncertainty, dynamics and curriculum; the
+pure-JAX transform then initializes directed exit pose/velocity, elapsed time, visited flags,
+reward potential/history and runner start progress. Training metrics are split by start progress.
+Validation/evaluation always force original full starts. Checkpoint format 3 exactly restores the
+new runner; format-2 V2 policies remain policy-only compatible but cannot exact-resume. Selection
+is lexicographic by successes, total gates passed, fewer collisions, and mean return.
+
+The segment experiment must start from random parameters. Its 382-update pilot is 50,069,504 steps
+of the unchanged 500M LR and curriculum clocks. CPU and 1024-world GPU rollout/update tests pass.
+The segment 10M benchmark measured 181,639.64 steady SPS and 2.15944x the 84,114.36 SPS PyTorch
+reference, passing both the 171k and 2x gates; its ignored report is
+`saves/jax_ppo/performance/level3_v2_segment_jax_10m.json`. After the pilot, require all three
+segment target-gate pass rates >=50%, start-2 remaining-track success >=5%, and start-3
+remaining-track success >=20%, with no numerical instability. Continuing from the pilot checkpoint
+to 500M requires explicit user confirmation and must not early-stop.
 
 ## Historical Level 2 V2 research notes
 
@@ -385,6 +407,20 @@ pixi run -e jax-rl-gpu benchmark-level3-jax-ppo \
   --timesteps 10000000 \
   --pytorch-report saves/jax_ppo/performance/level3_v2_final_torch_10m.json \
   --output saves/jax_ppo/performance/level3_v2_final_jax_10m.json
+
+pixi run -e jax-rl-gpu benchmark-level3-jax-ppo \
+  --profile level3_v2_segment --timesteps 10000000 \
+  --pytorch-report saves/jax_ppo/performance/level3_v2_final_torch_10m.json \
+  --output saves/jax_ppo/performance/level3_v2_segment_jax_10m.json
+pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v2_segment --max-updates 382 --skip-final-evaluation
+pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v2_segment \
+  --resume saves/jax_ppo/level3_v2_segment/latest
+pixi run -e jax-rl-gpu eval-level3-jax-ppo \
+  --profile level3_v2_segment \
+  --checkpoint saves/jax_ppo/level3_v2_segment/best_ema \
+  --episodes 5000 --seed 30000
 ```
 
 Compilation time must be reported separately from steady throughput. If a V2 change fails the 2x
@@ -400,29 +436,28 @@ process owned by the Codex terminal. A representative launch is:
 
 ```bash
 systemd-run --user \
-  --unit=lsy-jax-ppo-level3-v2 \
-  --description='LSY Level 3 structured JAX PPO V2 training' \
+  --unit=lsy-jax-ppo-level3-segment-pilot \
+  --description='LSY Level 3 mixed-segment JAX PPO 50M pilot' \
   --property=WorkingDirectory=/media/ymlee/yuming_data/repos/lsy_drone_racing \
   --collect \
   /home/ymlee/.pixi/bin/pixi run -e jax-rl-gpu train-level3-jax-ppo \
-  --profile level3_v2 \
-  --initialize-policy saves/jax_ppo/level3_v2_reward4_pilot50m/latest \
-  --initialize-policy-ema
+  --profile level3_v2_segment --max-updates 382 --skip-final-evaluation
 ```
 
 Before reporting the job as detached, verify all of the following:
 
 ```bash
-systemctl --user status lsy-jax-ppo-level3-v2
-journalctl --user -u lsy-jax-ppo-level3-v2 -n 100 --no-pager
+systemctl --user status lsy-jax-ppo-level3-segment-pilot
+journalctl --user -u lsy-jax-ppo-level3-segment-pilot -n 100 --no-pager
 nvidia-smi
 ```
 
-Use `journalctl --user -u lsy-jax-ppo-level3-v2 -f` to follow logs and
-`systemctl --user stop lsy-jax-ppo-level3-v2` for a graceful stop. The Level 3 CLI catches SIGINT
-and SIGTERM, requests shutdown after the current PPO update, and saves `latest` in `finally`, but a
-real transient-service stop/save/resume test passed on 2026-08-12 at 6,291,456 steps. Exact restore
-continued from update 48. Keep this behavior covered when changing the lifecycle.
+Use `journalctl --user -u lsy-jax-ppo-level3-segment-pilot -f` to follow logs and
+`systemctl --user stop lsy-jax-ppo-level3-segment-pilot` for a graceful stop. The Level 3 CLI
+catches SIGINT and SIGTERM, requests shutdown after the current PPO update, and saves `latest` in
+`finally`, but a real transient-service stop/save/resume test passed on 2026-08-12 at 6,291,456
+steps. Exact restore continued from update 48. Keep this behavior covered when changing the
+lifecycle.
 
 ## Required tests for V2 changes
 
@@ -442,6 +477,10 @@ In addition to existing regression tests, add tests for:
 - checkpoint exact resume, optimizer state, PRNG, and recurrent state if used
 - finite rollout/update values and parameter changes
 - 1024-world GPU rollout, masked reset, full PPO update, and no production Torch import
+- mixed-start sampling ratio, positive/reverse exit-side geometry, candidate safety, state ranges,
+  visited/nominal semantics, elapsed time, and per-start reward/history initialization
+- segment masked reset and diagnostics, full-start equivalence, evaluation full-start enforcement,
+  format-2 policy-only compatibility/format-3 exact resume, and lexicographic checkpoint selection
 
 ## Git and change discipline
 

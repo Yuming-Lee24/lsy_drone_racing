@@ -35,6 +35,7 @@ class Level3EvaluationResult:
 
     episodes: int
     successes: int
+    collisions: int
     success_rate: float
     success_rate_ci_low: float
     success_rate_ci_high: float
@@ -49,6 +50,8 @@ class Level3EvaluationResult:
     ground_collision_rate: float
     boundary_collision_rate: float
     failures_by_gate: dict[str, int]
+    total_gates_passed: int
+    mean_gates_passed: float
     mean_min_gate_center_distance: float
     mean_min_gate_plane_distance: float
     mean_min_lateral_error_near_plane: float
@@ -107,7 +110,7 @@ def evaluate_level3_params(
             collect = make_level3_evaluation_collector(env, model, eval_config)
             collectors[count] = (env, collect)
         env, collect = collectors[count]
-        runner = initialize_level3_runner(env, eval_config, seed=seed + start)
+        runner = initialize_level3_runner(env, eval_config, seed=seed + start, mixed_segment=False)
         _, metrics = collect(runner, params)
         metrics = jax.device_get(metrics)
         frequency = env.settings.freq
@@ -169,9 +172,11 @@ def evaluate_level3_params(
         f"before_gate_{gate + 1}": int(np.sum((~successes_array) & (failed_gate_array == gate)))
         for gate in range(4)
     }
+    gates_passed = np.where(successes_array, 4, failed_gate_array)
     return Level3EvaluationResult(
         episodes=episodes,
         successes=success_count,
+        collisions=int(np.sum(collisions)),
         success_rate=success_count / episodes,
         success_rate_ci_low=ci_low,
         success_rate_ci_high=ci_high,
@@ -186,6 +191,8 @@ def evaluate_level3_params(
         ground_collision_rate=float(np.mean(ground_collisions)),
         boundary_collision_rate=float(np.mean(boundary_collisions)),
         failures_by_gate=failures_by_gate,
+        total_gates_passed=int(gates_passed.sum()),
+        mean_gates_passed=float(gates_passed.mean()),
         mean_min_gate_center_distance=float(np.mean(min_gate_center_distances)),
         mean_min_gate_plane_distance=float(np.mean(min_gate_plane_distances)),
         mean_min_lateral_error_near_plane=(
@@ -203,7 +210,9 @@ def evaluate_level3_params(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
-    parser.add_argument("--profile", choices=("level3_v2",), default="level3_v2")
+    parser.add_argument(
+        "--profile", choices=("level3_v2", "level3_v2_segment"), default="level3_v2"
+    )
     parser.add_argument("--episodes", type=int, default=5_000)
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=30_000)
@@ -229,7 +238,7 @@ def main() -> None:
         total_timesteps=1,
     )
     env = create_level3_environment(template_config, curriculum=False)
-    runner = initialize_level3_runner(env, template_config)
+    runner = initialize_level3_runner(env, template_config, mixed_segment=False)
     model = create_level3_model(env, template_config)
     template = initialize_level3_parameters(
         model, runner.actor_observation, runner.critic_observation, config.seed

@@ -112,6 +112,29 @@ short pilot, so changing a run's stopping budget cannot accidentally compress th
 
 Validation always uses `d=1` and the original Level 3 environment, independent of curriculum.
 
+## Mixed gate/segment reset profile
+
+`level3_v2_segment` is a reset-distribution experiment. It deliberately reuses the exact V2
+observation, reward, Actor/Critic, PPO update, collision termination, curriculum, random Level 3
+track generator, and success definition. It must start with random parameters; policy-only
+initialization is rejected. Exact resume is supported only from its own format-3 checkpoint.
+
+After the ordinary reset has generated the complete track, uncertainty, dynamics, and clean
+controller state, each training world independently samples one of four start-progress values with
+probability 0.25: the original start, or just after gate one, two, or three. Segment states are
+placed in the real previous-gate exit frame. The randomized exit distance is 0.25-0.35 m with
+0.04 m lateral/vertical perturbations; unsafe candidates fall back to centred 0.20 m and 0.12 m
+exit candidates. Initial velocity, attitude, angular velocity, passed/visited flags, potential,
+reward history, previous action, state derivatives, and simulated elapsed time are initialized
+consistently. Segment worlds retain the episode's pre-transform nominal map rather than treating
+the deliberately visited passed gates as newly nominal geometry.
+
+Training rollouts report episode count, target-gate pass rate, remaining-track completion,
+collision rate, timeout rate, and final progress separately for starts 0-3. Validation and the
+evaluation CLI force `full_start`; a segment profile can never turn a shortened episode into a
+headline Level 3 success. Best checkpoints use the frozen lexicographic order: success count,
+total gates passed, fewer collisions, then mean return.
+
 ## PPO and lifecycle
 
 - 1,024 environments x 128 steps, eight minibatches, four epochs.
@@ -120,8 +143,10 @@ Validation always uses `d=1` and the original Level 3 environment, independent o
 - target KL 0.01 stops remaining epochs at epoch boundaries.
 - gradient norm 0.5; parameter EMA 0.99. Validation records raw and EMA independently and stores
   separate `best_raw` and `best_ema` checkpoints.
-- Checkpoints are V2/version-checked. Exact resume includes raw/EMA parameters, optimizer, PRNG,
-  environment, curriculum progress, belief anchors, and history. V1 policies are rejected.
+- Checkpoints are V2/version-checked. Format 3 exact resume includes raw/EMA parameters,
+  optimizer, PRNG, environment, curriculum progress, start progress, belief anchors, and history.
+  Existing format-2 V2 checkpoints remain policy-only compatible but are explicitly rejected for
+  exact resume; V1 policies are rejected.
 - SIGINT and SIGTERM request a save after the current PPO update.
 
 Commands:
@@ -136,6 +161,21 @@ pixi run -e jax-rl-gpu train-level3-jax-ppo \
   --initialize-policy-ema
 pixi run -e jax-rl-gpu eval-level3-jax-ppo \
   --checkpoint saves/jax_ppo/level3_v2/best_ema --episodes 5000 --seed 30000
+
+# First 50,069,504 steps of the unchanged 500M schedule (382 updates).
+pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v2_segment --max-updates 382 --skip-final-evaluation
+
+# Run only after the pilot gates pass and the user explicitly authorizes continuation.
+pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v2_segment \
+  --resume saves/jax_ppo/level3_v2_segment/latest
+
+# Always evaluates original starts at full difficulty.
+pixi run -e jax-rl-gpu eval-level3-jax-ppo \
+  --profile level3_v2_segment \
+  --checkpoint saves/jax_ppo/level3_v2_segment/best_ema \
+  --episodes 5000 --seed 30000
 ```
 
 Long jobs must use a named `systemd --user` transient service and require `Linger=yes`. Record the
@@ -157,6 +197,12 @@ minibatches, and four epochs measured:
 Reports are ignored artifacts under
 `saves/jax_ppo/performance/level3_v2_final_{torch,jax}_10m.json`.
 
+The mixed-segment 10M benchmark passed: 181,639.64 end-to-end SPS, 441,945.41 rollout SPS,
+301,995.37 optimizer sample SPS, 2.15944x over the 84,114.36 SPS PyTorch reference, 100% median GPU
+utilization, and 9,513 MiB peak memory. XLA rollout/optimizer compilation took 11.019/1.364 seconds
+and is excluded from steady throughput. The ignored report is
+`saves/jax_ppo/performance/level3_v2_segment_jax_10m.json`.
+
 The first 50M reward pilot converged to hovering: deterministic EMA was 0/500 and 81.8% truncated.
 Increasing directed progress produced a navigation policy whose raw parameters reached gate two
 in 372/500 scenarios and gate three in 100/500, but collided in 81.2%. A strong safety ablation
@@ -166,7 +212,8 @@ fixed 500-scenario validation, raw/EMA collision was 59.4%/57.6%; 333/360 scenar
 passed gate one, and 29/25 reached gate three. Neither completed all four gates, so the success
 point estimate remains 0% and no 90% claim is warranted.
 
-The 50M gate-completion/learning-direction gate is passed, but the full 500M run still requires
-explicit user authorization. The recommended start is policy-only initialization from the reward4
-pilot EMA with a fresh optimizer, PRNG, environment, curriculum, and 500M learning-rate schedule;
-this is deliberately different from exact resume.
+The previous 50M gate-completion/learning-direction gate was passed, but gate three remained the
+bottleneck. The mixed-segment experiment supersedes the earlier policy-initialization proposal and
+starts from random parameters. Its 382-update pilot is the first part of the same 500M schedule;
+it is not a compressed pilot schedule. Implementation and tests do not authorize launching the
+pilot, and continuation after the pilot still requires explicit user confirmation.

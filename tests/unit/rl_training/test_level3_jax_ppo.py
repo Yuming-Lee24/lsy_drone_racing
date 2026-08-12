@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -23,6 +23,7 @@ from lsy_drone_racing.rl_training.level3_algorithm import (
 from lsy_drone_racing.rl_training.level3_checkpoint import (
     LEVEL3_FORMAT_VERSION,
     LEVEL3_OBSERVATION_VERSION,
+    load_level3_policy,
     restore_level3_checkpoint,
     save_level3_checkpoint,
     validate_level3_metadata,
@@ -51,10 +52,12 @@ from lsy_drone_racing.rl_training.level3_rewards import (
     initialize_level3_reward_state,
     level3_reward,
 )
+from lsy_drone_racing.rl_training.level3_segment_reset import sample_segment_start_progress
+from lsy_drone_racing.rl_training.level3_training import (
+    _existing_validation_ranks,
+    level3_validation_rank,
+)
 from lsy_drone_racing.rl_training.networks import squashed_log_probability
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def synthetic_level3_observation(num_envs: int = 2) -> dict[str, jax.Array]:
@@ -323,6 +326,98 @@ def test_curriculum_schedule_has_expected_mixture_means():
 
 
 @pytest.mark.unit
+def test_segment_start_sampling_and_frozen_profile_defaults():
+    config = get_level3_profile("level3_v2_segment")
+    samples = sample_segment_start_progress(
+        jax.random.key(123), config.segment_reset.start_probabilities, 100_000
+    )
+    frequencies = np.bincount(np.asarray(samples), minlength=4) / samples.size
+
+    np.testing.assert_allclose(frequencies, 0.25, atol=0.01)
+    assert config.segment_reset.enabled
+    assert config.profile == "level3_v2_segment"
+    assert config.total_timesteps == 500_000_000
+    assert config.curriculum_timesteps == 500_000_000
+    assert config.num_updates == 3814
+
+
+@pytest.mark.unit
+def test_level3_validation_rank_is_lexicographic():
+    base = {
+        "successes": 400,
+        "total_gates_passed": 1800,
+        "collisions": 70,
+        "mean_episode_return": 50.0,
+    }
+    more_success = {**base, "successes": 401, "total_gates_passed": 0}
+    more_gates = {**base, "total_gates_passed": 1801, "collisions": 500}
+    fewer_collisions = {**base, "collisions": 69, "mean_episode_return": -100.0}
+    more_return = {**base, "mean_episode_return": 51.0}
+
+    assert level3_validation_rank(more_success) > level3_validation_rank(base)
+    assert level3_validation_rank(more_gates) > level3_validation_rank(base)
+    assert level3_validation_rank(fewer_collisions) > level3_validation_rank(base)
+    assert level3_validation_rank(more_return) > level3_validation_rank(base)
+
+
+@pytest.mark.unit
+def test_level3_validation_rank_survives_exact_resume(tmp_path: Path):
+    records = (
+        {
+            "checkpoint": "current_raw",
+            "successes": 40,
+            "total_gates_passed": 180,
+            "collisions": 8,
+            "mean_episode_return": 50.0,
+        },
+        {
+            "checkpoint": "current_raw",
+            "successes": 41,
+            "total_gates_passed": 170,
+            "collisions": 9,
+            "mean_episode_return": 49.0,
+        },
+        {
+            "checkpoint": "current_ema",
+            "successes": 39,
+            "total_gates_passed": 185,
+            "collisions": 7,
+            "mean_episode_return": 52.0,
+        },
+        {"checkpoint": "current_raw", "success_rate": 0.5},
+    )
+    (tmp_path / "validation.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in records), encoding="utf-8"
+    )
+
+    ranks = _existing_validation_ranks(tmp_path)
+    assert ranks["raw"] == level3_validation_rank(records[1])
+    assert ranks["ema"] == level3_validation_rank(records[2])
+
+
+@pytest.mark.unit
+def test_level3_production_path_does_not_import_torch():
+    package = Path(__file__).parents[3] / "lsy_drone_racing" / "rl_training"
+    production = (
+        "level3_algorithm.py",
+        "level3_checkpoint.py",
+        "level3_config.py",
+        "level3_environment.py",
+        "level3_evaluation.py",
+        "level3_networks.py",
+        "level3_observations.py",
+        "level3_rewards.py",
+        "level3_runtime.py",
+        "level3_segment_reset.py",
+        "level3_training.py",
+    )
+    for filename in production:
+        source = (package / filename).read_text(encoding="utf-8")
+        assert "import torch" not in source
+        assert "from torch" not in source
+
+
+@pytest.mark.unit
 def test_checkpoint_version_rejection_and_level3_controller_determinism(tmp_path: Path):
     (tmp_path / METADATA_FILE).write_text(json.dumps({"format_version": 1}), encoding="utf-8")
     with pytest.raises(ValueError, match="V1 policies cannot be loaded"):
@@ -425,3 +520,12 @@ def test_level3_checkpoint_exactly_restores_optimizer_ema_and_typed_key(tmp_path
     np.testing.assert_array_equal(
         jax.tree.leaves(restored.ema_params)[0], jax.tree.leaves(state.ema_params)[0]
     )
+
+    metadata_path = tmp_path / METADATA_FILE
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["format_version"] = 2
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    policy = load_level3_policy(tmp_path, state.params)
+    np.testing.assert_array_equal(jax.tree.leaves(policy)[0], jax.tree.leaves(state.params)[0])
+    with pytest.raises(ValueError, match="policy-only compatible"):
+        restore_level3_checkpoint(tmp_path, state, runner, config)

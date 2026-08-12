@@ -50,6 +50,34 @@ class Level3RewardCoefficients:
 
 
 @dataclass(frozen=True)
+class SegmentResetConfig:
+    """Static mixed-start distribution used only by Level 3 training collectors."""
+
+    enabled: bool = False
+    start_probabilities: tuple[float, float, float, float] = (0.25, 0.25, 0.25, 0.25)
+    exit_distance_min: float = 0.25
+    exit_distance_max: float = 0.35
+    fallback_exit_distances: tuple[float, float] = (0.20, 0.12)
+    lateral_offset: float = 0.04
+    vertical_offset: float = 0.04
+    speed_min: float = 0.35
+    speed_max: float = 0.85
+    direction_blend_max: float = 0.35
+    velocity_perturbation: float = 0.08
+    yaw_perturbation: float = 0.20
+    roll_pitch_perturbation: float = 0.10
+    angular_velocity: float = 0.50
+    route_speed_estimate: float = 0.75
+    elapsed_base_seconds: float = 1.0
+    elapsed_scale_min: float = 0.8
+    elapsed_scale_max: float = 1.2
+    environment_frequency: float = 50.0
+    minimum_remaining_steps: int = 400
+    gate_plane_half_thickness: float = 0.02
+    gate_outer_buffer: float = 0.10
+
+
+@dataclass(frozen=True)
 class Level3PPOConfig:
     """Shape-stable Level 3 training configuration."""
 
@@ -89,6 +117,7 @@ class Level3PPOConfig:
     curriculum: bool = True
     geometry: SafetyGeometry = SafetyGeometry()
     reward: Level3RewardCoefficients = Level3RewardCoefficients()
+    segment_reset: SegmentResetConfig = SegmentResetConfig()
 
     @property
     def batch_size(self) -> int:
@@ -126,6 +155,20 @@ class Level3PPOConfig:
             raise ValueError("entity_dim must be divisible by attention_heads")
         if not 0.0 < self.target_kl:
             raise ValueError("target_kl must be positive")
+        probabilities = self.segment_reset.start_probabilities
+        if len(probabilities) != 4 or any(value < 0.0 for value in probabilities):
+            raise ValueError("segment start_probabilities must contain four non-negative values")
+        if abs(sum(probabilities) - 1.0) > 1e-6:
+            raise ValueError("segment start_probabilities must sum to one")
+        if self.segment_reset.enabled:
+            if self.max_episode_steps <= self.segment_reset.minimum_remaining_steps:
+                raise ValueError("segment reset requires more than minimum_remaining_steps")
+            if not 0.0 < self.segment_reset.route_speed_estimate:
+                raise ValueError("segment route_speed_estimate must be positive")
+            if not 0.0 < self.segment_reset.environment_frequency:
+                raise ValueError("segment environment_frequency must be positive")
+            if not 0.0 <= self.segment_reset.direction_blend_max <= 1.0:
+                raise ValueError("segment direction_blend_max must be in [0, 1]")
 
     def with_overrides(self, **overrides: Any) -> Level3PPOConfig:
         """Return a validated configuration copy."""
@@ -137,8 +180,13 @@ class Level3PPOConfig:
 
 def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
     """Return the frozen reliability-first Level 3 profile."""
-    if name != "level3_v2":
-        raise ValueError("Unknown Level 3 profile; expected 'level3_v2'")
-    config = Level3PPOConfig()
+    if name == "level3_v2":
+        config = Level3PPOConfig()
+    elif name == "level3_v2_segment":
+        config = Level3PPOConfig(
+            profile="level3_v2_segment", segment_reset=SegmentResetConfig(enabled=True)
+        )
+    else:
+        raise ValueError("Unknown Level 3 profile; expected 'level3_v2' or 'level3_v2_segment'")
     config.validate()
     return config

@@ -21,8 +21,9 @@ if TYPE_CHECKING:
     from lsy_drone_racing.rl_training.level3_environment import Level3RunnerState
 
 EMA_POLICY_FILE = "ema_policy.msgpack"
-LEVEL3_FORMAT_VERSION = 2
+LEVEL3_FORMAT_VERSION = 3
 LEVEL3_OBSERVATION_VERSION = 2
+LEVEL3_POLICY_FORMAT_VERSIONS = frozenset((2, LEVEL3_FORMAT_VERSION))
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
@@ -65,21 +66,30 @@ def _metadata(config: Level3PPOConfig, total_steps: int, update: int) -> dict[st
     }
 
 
-def validate_level3_metadata(path: Path, config: Level3PPOConfig | None = None) -> dict[str, Any]:
-    """Reject V1 or structurally incompatible checkpoints before deserialization."""
+def validate_level3_metadata(
+    path: Path, config: Level3PPOConfig | None = None, *, exact_resume: bool = False
+) -> dict[str, Any]:
+    """Validate policy compatibility and, when requested, exact-resume compatibility."""
     directory = path if path.is_dir() else path.parent
     metadata_path = directory / METADATA_FILE
     if not metadata_path.exists():
         raise ValueError(f"Level 3 V2 checkpoint metadata is missing: {metadata_path}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if metadata.get("format_version") != LEVEL3_FORMAT_VERSION:
+    format_version = metadata.get("format_version")
+    if format_version not in LEVEL3_POLICY_FORMAT_VERSIONS:
         raise ValueError(
-            "Incompatible checkpoint format: Level 3 V2 requires format_version=2; "
+            "Incompatible checkpoint format: Level 3 V2 requires format_version 2 or 3; "
             "V1 policies cannot be loaded into the structured model."
         )
     if metadata.get("observation_version") != LEVEL3_OBSERVATION_VERSION:
         raise ValueError("Incompatible checkpoint observation version; expected Level 3 V2")
-    if config is not None and metadata.get("config") != asdict(config):
+    if exact_resume and format_version != LEVEL3_FORMAT_VERSION:
+        raise ValueError(
+            "Exact resume requires Level 3 checkpoint format_version=3 because the runner now "
+            "contains episode_start_progress; format_version=2 remains policy-only compatible."
+        )
+    expected_config = json.loads(json.dumps(asdict(config))) if config is not None else None
+    if expected_config is not None and metadata.get("config") != expected_config:
         raise ValueError(
             "Exact resume requires the same Level 3 configuration, including rollout shapes, "
             "optimizer schedule, curriculum budget, and random seed."
@@ -120,7 +130,7 @@ def restore_level3_checkpoint(
     config: Level3PPOConfig | None = None,
 ) -> tuple[Level3TrainState, Level3RunnerState, int, int]:
     """Restore an exact V2 continuation using live device structures as templates."""
-    validate_level3_metadata(path, config)
+    validate_level3_metadata(path, config, exact_resume=True)
     checkpoint_file = path / CHECKPOINT_FILE if path.is_dir() else path
     target = {
         "params": train_state.params,

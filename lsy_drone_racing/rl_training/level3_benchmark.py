@@ -33,21 +33,19 @@ from lsy_drone_racing.rl_training.runtime import PROJECT_ROOT
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--profile", choices=("level3_v2", "level3_v2_segment"), default="level3_v2"
+    )
     parser.add_argument("--timesteps", type=int, default=10_000_000)
     parser.add_argument("--num-envs", type=int, default=1024)
     parser.add_argument("--num-steps", type=int, default=128)
     parser.add_argument("--num-minibatches", type=int, default=8)
-    parser.add_argument("--update-epochs", type=int, default=6)
+    parser.add_argument("--update-epochs", type=int, default=4)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="gpu")
     parser.add_argument("--pytorch-report", required=True, type=Path)
     parser.add_argument("--minimum-speedup", type=float, default=2.0)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=(
-            PROJECT_ROOT / "saves" / "jax_ppo" / "performance" / "level3_v2_final_jax_10m.json"
-        ),
-    )
+    parser.add_argument("--minimum-sps", type=float, default=171_000.0)
+    parser.add_argument("--output", type=Path)
     return parser
 
 
@@ -56,7 +54,7 @@ def main() -> None:
     args = _parser().parse_args()
     baseline_report = json.loads(args.pytorch_report.read_text(encoding="utf-8"))
     baseline_sps = float(baseline_report["end_to_end_sps"])
-    config = get_level3_profile().with_overrides(
+    config = get_level3_profile(args.profile).with_overrides(
         device=args.device,
         num_envs=args.num_envs,
         num_steps=args.num_steps,
@@ -122,7 +120,7 @@ def main() -> None:
     end_to_end_sps = measured_steps / end_to_end_seconds
     speedup = end_to_end_sps / baseline_sps
     report = {
-        "implementation": "fused-level3-v2-jax-ppo",
+        "implementation": f"fused-{args.profile.replace('_', '-')}-jax-ppo",
         "config": asdict(config),
         "first_end_to_end_update_seconds": first_end_to_end_seconds,
         "xla_rollout_compile_seconds": rollout_compile_seconds,
@@ -136,19 +134,29 @@ def main() -> None:
         "baseline_label": baseline_report.get("implementation", str(args.pytorch_report)),
         "speedup": speedup,
         "minimum_speedup": args.minimum_speedup,
-        "performance_gate_passed": speedup >= args.minimum_speedup,
+        "minimum_end_to_end_sps": args.minimum_sps,
+        "performance_gate_passed": (
+            speedup >= args.minimum_speedup and end_to_end_sps >= args.minimum_sps
+        ),
         "estimated_500m_training_hours_excluding_validation": (
             500_000_000 / end_to_end_sps / 3600.0
         ),
         **sampler.summary(),
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    default_name = (
+        "level3_v2_final_jax_10m.json"
+        if args.profile == "level3_v2"
+        else "level3_v2_segment_jax_10m.json"
+    )
+    output = args.output or PROJECT_ROOT / "saves" / "jax_ppo" / "performance" / default_name
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
     env.close()
     if not report["performance_gate_passed"]:
         raise SystemExit(
-            f"Level 3 JAX speedup {speedup:.2f}x is below {args.minimum_speedup:.2f}x; "
+            f"Level 3 JAX performance ({end_to_end_sps:,.0f} SPS, {speedup:.2f}x) is below "
+            f"the {args.minimum_sps:,.0f} SPS / {args.minimum_speedup:.2f}x gates; "
             "do not start long training."
         )
 
