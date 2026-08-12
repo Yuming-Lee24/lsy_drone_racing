@@ -217,3 +217,20 @@ bottleneck. The mixed-segment experiment supersedes the earlier policy-initializ
 starts from random parameters. Its 382-update pilot is the first part of the same 500M schedule;
 it is not a compressed pilot schedule. Implementation and tests do not authorize launching the
 pilot, and continuation after the pilot still requires explicit user confirmation.
+
+The mixed-segment 50M pilot completed at 50,069,504 steps but failed its learning gate. All segment
+target-gate pass rates ended at zero, and original-start raw/EMA evaluation passed zero gates in
+500 scenarios. A follow-up diagnostic EMA evaluation showed that 98.2% of scenarios observed the
+current gate, but none passed it. The mean minimum plane distance was 0.014 m while near-plane
+lateral error was 0.709 m. This rules out sensor visibility as the primary cause: V2 route progress
+could be harvested near the gate plane outside the opening, and prediction-only gate risk vanished
+when the policy stopped.
+
+`level3_v3_reward` keeps the same observation, network, PPO, segment reset and formal evaluation.
+It changes only reward geometry: route progress is reduced to 12, gate reward is increased to 30,
+route phase transitions are gated by current opening alignment, and current-clearance near-plane/
+stall penalties remain active even without a valid predicted crossing. It starts from random
+parameters. The V3 10M performance check passed at 181,357.14 end-to-end SPS and 2.15608x the
+PyTorch reference; rollout was 441,354.55 SPS and peak GPU memory was 9,513 MiB. Its first pilot is
+77 updates (10,092,544 steps of the unchanged 500M schedule). Do not continue or add pre-gate
+starts until its gate-pass diagnostics are reviewed.

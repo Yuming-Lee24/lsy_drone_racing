@@ -176,6 +176,30 @@ def test_crossing_prediction_clearance_and_route_potential_telescopes():
 
 
 @pytest.mark.unit
+def test_reward_v3_route_stays_on_approach_phase_until_aperture_is_aligned():
+    config = get_level3_profile("level3_v3_reward")
+    observation = synthetic_level3_observation(1)
+    aligned_approach = {**observation, "pos": jnp.asarray([[0.5, 0.0, 0.7]], dtype=jnp.float32)}
+    unsafe_plane = {**observation, "pos": jnp.asarray([[1.0, 0.7, 0.7]], dtype=jnp.float32)}
+    safer_plane = {**observation, "pos": jnp.asarray([[1.0, 0.6, 0.7]], dtype=jnp.float32)}
+    temperature = config.reward.alignment_temperature
+    aligned_potential = route_potential(
+        aligned_approach, config.geometry, alignment_temperature=temperature
+    )
+    unsafe_potential = route_potential(
+        unsafe_plane, config.geometry, alignment_temperature=temperature
+    )
+    safer_potential = route_potential(
+        safer_plane, config.geometry, alignment_temperature=temperature
+    )
+
+    assert float(unsafe_potential[0]) > float(aligned_potential[0])
+    assert float(safer_potential[0]) < float(unsafe_potential[0])
+    assert config.reward.route_progress == 12.0
+    assert config.reward.gate == 30.0
+
+
+@pytest.mark.unit
 def test_history_reset_is_masked_and_obstacle_pooling_is_permutation_invariant():
     obs = synthetic_level3_observation()
     memory = initialize_level3_memory(obs)
@@ -256,6 +280,35 @@ def test_reward_only_rewards_safe_crossing_speed_and_penalizes_late_failure_more
     )
     collision_index = LEVEL3_REWARD_COMPONENTS.index("collision")
     assert float(collision.completed_components[0, collision_index]) == pytest.approx(-180.0)
+
+
+@pytest.mark.unit
+def test_reward_v3_penalizes_stationary_unsafe_plane_without_prediction_validity():
+    config = get_level3_profile("level3_v3_reward")
+    observation = synthetic_level3_observation(1)
+    unsafe = {
+        **observation,
+        "pos": jnp.asarray([[1.0, 0.7, 0.7]], dtype=jnp.float32),
+        "vel": jnp.zeros((1, 3), dtype=jnp.float32),
+    }
+    state = initialize_level3_reward_state(unsafe, config.geometry, config.reward)
+    next_state, transition = level3_reward(
+        state,
+        unsafe,
+        unsafe,
+        initialize_level3_memory(unsafe),
+        jnp.zeros((1, 4), dtype=jnp.float32),
+        jnp.asarray([False]),
+        jnp.asarray([False]),
+        jnp.asarray([-3.0, -3.0, 0.0]),
+        jnp.asarray([3.0, 3.0, 2.5]),
+        config.reward,
+        config.geometry,
+    )
+    risk_index = LEVEL3_REWARD_COMPONENTS.index("gate_risk")
+
+    assert float(next_state.episode_components[0, risk_index]) <= -0.39
+    assert float(transition.reward[0]) < 0.0
 
 
 @pytest.mark.unit

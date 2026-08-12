@@ -60,17 +60,31 @@ class Level3RewardTransition:
 
 
 def initialize_level3_reward_state(
-    true_observation: dict[str, Array], geometry: SafetyGeometry
+    true_observation: dict[str, Array],
+    geometry: SafetyGeometry,
+    coefficients: Level3RewardCoefficients | None = None,
 ) -> Level3RewardState:
     """Initialize a reward potential from actual reset geometry."""
     num_envs = true_observation["pos"].shape[0]
     return Level3RewardState(
-        last_route_potential=route_potential(true_observation, geometry),
+        last_route_potential=reward_route_potential(true_observation, geometry, coefficients),
         last_action=jnp.zeros((num_envs, 4), dtype=jnp.float32),
         last_progress=true_observation["n_gates_passed"],
         episode_components=jnp.zeros((num_envs, len(LEVEL3_REWARD_COMPONENTS)), dtype=jnp.float32),
         episode_length=jnp.zeros(num_envs, dtype=jnp.int32),
     )
+
+
+def reward_route_potential(
+    observation: dict[str, Array],
+    geometry: SafetyGeometry,
+    coefficients: Level3RewardCoefficients | None,
+) -> Array:
+    """Select the versioned reward potential without changing Actor observations."""
+    alignment_temperature = (
+        getattr(coefficients, "alignment_temperature", None) if coefficients is not None else None
+    )
+    return route_potential(observation, geometry, alignment_temperature=alignment_temperature)
 
 
 def level3_reward(
@@ -96,7 +110,7 @@ def level3_reward(
     truncated = timeout
     done = terminated | truncated
 
-    potential = route_potential(terminal_true_observation, geometry)
+    potential = reward_route_potential(terminal_true_observation, geometry, coefficients)
     gate_changed = progress != state.last_progress
     route_delta = jnp.clip(
         state.last_route_potential - potential,
@@ -121,6 +135,29 @@ def level3_reward(
     )
     gate_risk = jnp.where(gate.prediction_valid & ~success, gate_margin_risk**2, 0.0)
     gate_risk_component = -coefficients.gate_risk * gate_risk
+    near_plane_distance = getattr(coefficients, "near_plane_distance", 0.0)
+    if near_plane_distance > 0.0:
+        current_clearance = jnp.minimum(
+            geometry.gate_safe_half_width - jnp.abs(gate.position[:, 1]),
+            geometry.gate_safe_half_height - jnp.abs(gate.position[:, 2]),
+        )
+        near_plane = jnp.clip(
+            (near_plane_distance - jnp.abs(gate.position[:, 0])) / near_plane_distance, 0.0, 1.0
+        )
+        unsafe_margin = jnp.clip(-current_clearance / geometry.gate_risk_buffer, 0.0, 1.0)
+        unsafe_near_plane = (
+            getattr(coefficients, "unsafe_near_plane", 0.0) * near_plane * unsafe_margin**2
+        )
+        stalled = jnp.linalg.norm(terminal_true_observation["vel"], axis=-1) < getattr(
+            coefficients, "stall_speed", 0.0
+        )
+        unsafe_stall = (
+            getattr(coefficients, "unsafe_stall", 0.0)
+            * near_plane
+            * unsafe_margin
+            * stalled.astype(jnp.float32)
+        )
+        gate_risk_component -= unsafe_near_plane + unsafe_stall
 
     obstacles = obstacle_geometry(terminal_true_observation, observation_memory, geometry)
     obstacle_risk_component = -coefficients.obstacle_risk * jnp.max(obstacles.risk, axis=-1)
@@ -166,7 +203,7 @@ def level3_reward(
     completed_components = jnp.where(done[:, None], episode_components, 0.0)
     completed_length = jnp.where(done, episode_length, 0)
 
-    reset_potential = route_potential(reset_true_observation, geometry)
+    reset_potential = reward_route_potential(reset_true_observation, geometry, coefficients)
     next_state = Level3RewardState(
         last_route_potential=jnp.where(done, reset_potential, potential),
         last_action=jnp.where(done[:, None], 0.0, action),

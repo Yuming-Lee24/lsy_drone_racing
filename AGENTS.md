@@ -268,6 +268,17 @@ segment target-gate pass rates >=50%, start-2 remaining-track success >=5%, and 
 remaining-track success >=20%, with no numerical instability. Continuing from the pilot checkpoint
 to 500M requires explicit user confirmation and must not early-stop.
 
+The 50M segment pilot failed: original-start and all segment pass rates ended at zero. Diagnostic
+evaluation found 98.2% current-gate visibility but zero passes, 0.014 m mean minimum gate-plane
+distance, and 0.709 m near-plane lateral error. The root cause is reward geometry, not insufficient
+sensor visibility: V2 allowed progress near the plane outside the opening and disabled gate risk
+when crossing prediction became invalid. `level3_v3_reward` is the active next pilot. It preserves
+Obs/network/PPO/reset/evaluation, reduces route progress to 12, raises gate reward to 30, gates
+route phase transitions on current aperture alignment, and adds current-clearance near-plane/stall
+penalties. Its 10M performance benchmark passed at 181,357.14 SPS and 2.15608x. Run only the first
+77 updates (10,092,544 steps) from random parameters, then review gate-pass diagnostics before any
+continuation or pre-gate curriculum.
+
 ## Historical Level 2 V2 research notes
 
 The following list predates the selected Level 3 design. Do not implement it over the authoritative

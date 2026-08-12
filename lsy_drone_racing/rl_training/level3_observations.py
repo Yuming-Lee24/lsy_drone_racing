@@ -342,8 +342,15 @@ def current_gate_geometry(obs: dict[str, Array], geometry: SafetyGeometry) -> Ga
     )
 
 
-def route_potential(obs: dict[str, Array], geometry: SafetyGeometry) -> Array:
-    """Return a smooth remaining directed route length for the current gate."""
+def route_potential(
+    obs: dict[str, Array], geometry: SafetyGeometry, *, alignment_temperature: float | None = None
+) -> Array:
+    """Return a smooth remaining directed route length for the current gate.
+
+    V2 advances route phases from signed plane distance alone. V3 additionally gates those phase
+    transitions on opening alignment, so approaching the plane outside the aperture keeps the
+    pre-gate centre waypoint active instead of exposing an exit-point shortcut.
+    """
     gate = current_gate_geometry(obs, geometry)
     position = gate.position
     approach = jnp.asarray([-geometry.approach_distance, 0.0, 0.0])
@@ -355,6 +362,14 @@ def route_potential(obs: dict[str, Array], geometry: SafetyGeometry) -> Array:
         (position[:, 0] + geometry.approach_distance) / geometry.route_blend_distance
     )
     second_blend = jax_sigmoid(position[:, 0] / geometry.route_blend_distance)
+    if alignment_temperature is not None:
+        opening_clearance = jnp.minimum(
+            geometry.gate_safe_half_width - jnp.abs(position[:, 1]),
+            geometry.gate_safe_half_height - jnp.abs(position[:, 2]),
+        )
+        alignment = jax_sigmoid(opening_clearance / alignment_temperature)
+        first_blend *= alignment
+        second_blend *= alignment
     before = to_approach + geometry.approach_distance + geometry.exit_distance
     crossing = to_centre + geometry.exit_distance
     return (1.0 - first_blend) * before + first_blend * (

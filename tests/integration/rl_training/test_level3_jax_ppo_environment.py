@@ -96,7 +96,7 @@ def test_level3_cpu_rollout_mask_reset_and_full_update():
 def test_level3_gpu_1024_world_rollout_and_full_update():
     if not any(device.platform == "gpu" for device in jax.devices()):
         pytest.skip("JAX GPU backend is unavailable")
-    runner, rollout, metrics, state, _ = run_level3_smoke("gpu", 1024, profile="level3_v2_segment")
+    runner, rollout, metrics, state, _ = run_level3_smoke("gpu", 1024, profile="level3_v3_reward")
 
     assert rollout.actor_observation.ego.shape == (2, 1024, EGO_DIM)
     assert metrics.done.shape == (2, 1024)

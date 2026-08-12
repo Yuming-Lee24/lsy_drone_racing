@@ -50,6 +50,19 @@ class Level3RewardCoefficients:
 
 
 @dataclass(frozen=True)
+class Level3V3RewardCoefficients(Level3RewardCoefficients):
+    """Aperture-gated reward that cannot be harvested by parking outside a gate."""
+
+    route_progress: float = 12.0
+    gate: float = 30.0
+    alignment_temperature: float = 0.04
+    near_plane_distance: float = 0.30
+    unsafe_near_plane: float = 0.30
+    unsafe_stall: float = 0.10
+    stall_speed: float = 0.20
+
+
+@dataclass(frozen=True)
 class SegmentResetConfig:
     """Static mixed-start distribution used only by Level 3 training collectors."""
 
@@ -178,6 +191,9 @@ class Level3PPOConfig:
         return config
 
 
+LEVEL3_PROFILE_NAMES = ("level3_v2", "level3_v2_segment", "level3_v3_reward")
+
+
 def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
     """Return the frozen reliability-first Level 3 profile."""
     if name == "level3_v2":
@@ -186,7 +202,13 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
         config = Level3PPOConfig(
             profile="level3_v2_segment", segment_reset=SegmentResetConfig(enabled=True)
         )
+    elif name == "level3_v3_reward":
+        config = Level3PPOConfig(
+            profile="level3_v3_reward",
+            reward=Level3V3RewardCoefficients(),
+            segment_reset=SegmentResetConfig(enabled=True),
+        )
     else:
-        raise ValueError("Unknown Level 3 profile; expected 'level3_v2' or 'level3_v2_segment'")
+        raise ValueError(f"Unknown Level 3 profile; expected one of {LEVEL3_PROFILE_NAMES}")
     config.validate()
     return config

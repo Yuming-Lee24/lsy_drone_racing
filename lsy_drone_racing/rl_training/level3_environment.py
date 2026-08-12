@@ -27,13 +27,13 @@ from lsy_drone_racing.rl_training.level3_observations import (
     build_critic_observation,
     current_gate_geometry,
     initialize_level3_memory,
-    route_potential,
 )
 from lsy_drone_racing.rl_training.level3_rewards import (
     LEVEL3_REWARD_COMPONENTS,
     Level3RewardState,
     initialize_level3_reward_state,
     level3_reward,
+    reward_route_potential,
 )
 from lsy_drone_racing.rl_training.level3_runtime import belief_observation, true_observation
 from lsy_drone_racing.rl_training.level3_segment_reset import apply_level3_segment_reset
@@ -87,6 +87,11 @@ class Level3RolloutMetrics:
     target_gate_passed: Array
     difficulty: Array
     gate_position: Array
+    gate_velocity: Array
+    gate_clearance: Array
+    current_gate_visited: Array
+    gate_correction_distance: Array
+    unsafe_near_plane_stall: Array
     gate_prediction_safe: Array
     route_potential: Array
     speed: Array
@@ -221,7 +226,7 @@ def initialize_level3_runner(
         belief_observation=belief,
         true_observation=actual,
         observation_memory=memory,
-        reward_state=initialize_level3_reward_state(actual, config.geometry),
+        reward_state=initialize_level3_reward_state(actual, config.geometry, config.reward),
         actor_observation=actor,
         critic_observation=critic,
         episode_start_progress=episode_start_progress,
@@ -372,6 +377,26 @@ def _build_level3_environment_step(
         next_actor = _actor_features(next_data, next_belief, next_memory, config)
         next_critic = _critic_features(env, next_data, next_belief, next_actor, next_memory, config)
         gate_geometry = current_gate_geometry(terminal_actual, config.geometry)
+        gate_index = jnp.clip(
+            terminal_actual["n_gates_passed"], 0, terminal_actual["gate_sequence"].shape[1] - 1
+        )
+        physical_gate = jnp.take_along_axis(
+            terminal_actual["gate_sequence"], gate_index[:, None], axis=1
+        ).squeeze(1)
+        world = jnp.arange(physical_gate.shape[0])
+        gate_correction_distance = jnp.linalg.norm(
+            terminal_data.gates_pos[world, physical_gate]
+            - terminal_memory.nominal_gates_pos[world, physical_gate],
+            axis=-1,
+        )
+        unsafe_near_plane_stall = (
+            (jnp.abs(gate_geometry.position[:, 0]) <= 0.20)
+            & (
+                (jnp.abs(gate_geometry.position[:, 1]) > config.geometry.gate_safe_half_width)
+                | (jnp.abs(gate_geometry.position[:, 2]) > config.geometry.gate_safe_half_height)
+            )
+            & (jnp.linalg.norm(terminal_actual["vel"], axis=-1) <= 0.20)
+        )
         return Level3EnvironmentTransition(
             next_runner=Level3RunnerState(
                 environment_data=next_data,
@@ -425,10 +450,17 @@ def _build_level3_environment_step(
                 ),
                 difficulty=jnp.where(reward_transition.done, terminal_data.difficulty, 0.0),
                 gate_position=gate_geometry.position,
+                gate_velocity=gate_geometry.velocity,
+                gate_clearance=gate_geometry.clearance,
+                current_gate_visited=gate_geometry.visited,
+                gate_correction_distance=gate_correction_distance,
+                unsafe_near_plane_stall=unsafe_near_plane_stall,
                 gate_prediction_safe=(
                     gate_geometry.prediction_valid & (gate_geometry.clearance > 0.0)
                 ),
-                route_potential=route_potential(terminal_actual, config.geometry),
+                route_potential=reward_route_potential(
+                    terminal_actual, config.geometry, config.reward
+                ),
                 speed=jnp.linalg.norm(terminal_actual["vel"], axis=-1),
                 episode_components=reward_transition.completed_components,
                 episode_length=reward_transition.completed_length,
@@ -554,6 +586,8 @@ def summarize_level3_rollout(metrics: Level3RolloutMetrics) -> dict[str, Array]:
         "episode_length": jnp.sum(metrics.episode_length) / denominator,
         "episode_reward": jnp.sum(component_sums) / denominator,
         "completed_difficulty": jnp.sum(metrics.difficulty) / denominator,
+        "current_gate_visited_step_rate": jnp.mean(metrics.current_gate_visited),
+        "unsafe_near_plane_stall_step_rate": jnp.mean(metrics.unsafe_near_plane_stall),
     }
     summary.update(
         {

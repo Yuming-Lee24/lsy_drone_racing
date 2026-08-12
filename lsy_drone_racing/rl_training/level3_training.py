@@ -22,7 +22,7 @@ from lsy_drone_racing.rl_training.level3_checkpoint import (
     restore_level3_checkpoint,
     save_level3_checkpoint,
 )
-from lsy_drone_racing.rl_training.level3_config import get_level3_profile
+from lsy_drone_racing.rl_training.level3_config import LEVEL3_PROFILE_NAMES, get_level3_profile
 from lsy_drone_racing.rl_training.level3_environment import (
     initialize_level3_runner,
     make_level3_rollout_collector,
@@ -105,9 +105,7 @@ def _existing_validation_ranks(output: Path) -> dict[str, tuple[int, int, int, f
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--profile", choices=("level3_v2", "level3_v2_segment"), default="level3_v2"
-    )
+    parser.add_argument("--profile", choices=LEVEL3_PROFILE_NAMES, default="level3_v2")
     parser.add_argument("--config-file")
     parser.add_argument("--device", choices=("cpu", "gpu"), default="gpu")
     parser.add_argument("--seed", type=int)
@@ -183,7 +181,7 @@ def train_level3(config: Level3PPOConfig, args: argparse.Namespace) -> None:
         raise ValueError("--initialize-policy-ema requires --initialize-policy")
     if config.segment_reset.enabled and args.initialize_policy is not None:
         raise ValueError(
-            "level3_v2_segment must start from random parameters or exact-resume itself"
+            f"{config.profile} must start from random parameters or exact-resume itself"
         )
     output = args.output or PROJECT_ROOT / "saves" / "jax_ppo" / config.profile
     output.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,7 @@ import numpy as np
 
 from lsy_drone_racing.rl_training.evaluation import wilson_interval
 from lsy_drone_racing.rl_training.level3_checkpoint import load_level3_policy
-from lsy_drone_racing.rl_training.level3_config import get_level3_profile
+from lsy_drone_racing.rl_training.level3_config import LEVEL3_PROFILE_NAMES, get_level3_profile
 from lsy_drone_racing.rl_training.level3_environment import (
     initialize_level3_runner,
     make_level3_evaluation_collector,
@@ -57,6 +57,12 @@ class Level3EvaluationResult:
     mean_min_lateral_error_near_plane: float
     reached_gate_plane_neighborhood_rate: float
     safe_gate_prediction_rate: float
+    current_gate_ever_visited_rate: float
+    current_gate_pass_given_visit_rate: float
+    mean_first_visit_gate_distance: float
+    mean_first_visit_lateral_error: float
+    mean_first_visit_correction_distance: float
+    mean_unsafe_near_plane_stall_time: float
     mean_route_potential_reduction: float
     mean_terminal_speed: float
 
@@ -89,6 +95,12 @@ def evaluate_level3_params(
     min_lateral_errors_near_plane: list[float] = []
     reached_gate_plane_neighborhoods: list[bool] = []
     safe_gate_predictions: list[bool] = []
+    current_gate_ever_visited: list[bool] = []
+    current_gate_passed_after_visit: list[bool] = []
+    first_visit_gate_distances: list[float] = []
+    first_visit_lateral_errors: list[float] = []
+    first_visit_correction_distances: list[float] = []
+    unsafe_near_plane_stall_times: list[float] = []
     route_potential_reductions: list[float] = []
     terminal_speeds: list[float] = []
     frequency = 0
@@ -152,6 +164,30 @@ def evaluate_level3_params(
         min_lateral_errors_near_plane.extend(lateral_minimum[reached].tolist())
         safe_prediction = np.asarray(metrics.gate_prediction_safe) & active
         safe_gate_predictions.extend(safe_prediction.any(axis=0).tolist())
+        visited = np.asarray(metrics.current_gate_visited) & active
+        ever_visited = visited.any(axis=0)
+        current_gate_ever_visited.extend(ever_visited.tolist())
+        terminal_progress = np.asarray(metrics.final_progress)[first, world]
+        passed_first_gate = terminal_progress >= 1
+        current_gate_passed_after_visit.extend((ever_visited & passed_first_gate).tolist())
+        first_visit = np.argmax(visited, axis=0)
+        visited_world = np.flatnonzero(ever_visited)
+        if visited_world.size:
+            visited_step = first_visit[visited_world]
+            first_position = gate_position[visited_step, visited_world]
+            first_visit_gate_distances.extend(np.linalg.norm(first_position, axis=-1).tolist())
+            first_visit_lateral_errors.extend(
+                np.linalg.norm(first_position[..., 1:], axis=-1).tolist()
+            )
+            first_visit_correction_distances.extend(
+                np.asarray(metrics.gate_correction_distance)[visited_step, visited_world].tolist()
+            )
+        unsafe_near_plane_stall_times.extend(
+            (
+                np.sum(np.asarray(metrics.unsafe_near_plane_stall) & active, axis=0)
+                / env.settings.freq
+            ).tolist()
+        )
         route_potential = np.asarray(metrics.route_potential)
         active_potential = np.where(active, route_potential, np.inf)
         route_potential_reductions.extend(
@@ -173,6 +209,8 @@ def evaluate_level3_params(
         for gate in range(4)
     }
     gates_passed = np.where(successes_array, 4, failed_gate_array)
+    visited_array = np.asarray(current_gate_ever_visited, dtype=bool)
+    passed_after_visit_array = np.asarray(current_gate_passed_after_visit, dtype=bool)
     return Level3EvaluationResult(
         episodes=episodes,
         successes=success_count,
@@ -202,6 +240,24 @@ def evaluate_level3_params(
         ),
         reached_gate_plane_neighborhood_rate=float(np.mean(reached_gate_plane_neighborhoods)),
         safe_gate_prediction_rate=float(np.mean(safe_gate_predictions)),
+        current_gate_ever_visited_rate=float(np.mean(visited_array)),
+        current_gate_pass_given_visit_rate=(
+            float(np.sum(passed_after_visit_array) / np.sum(visited_array))
+            if np.any(visited_array)
+            else 0.0
+        ),
+        mean_first_visit_gate_distance=(
+            float(np.mean(first_visit_gate_distances)) if first_visit_gate_distances else math.inf
+        ),
+        mean_first_visit_lateral_error=(
+            float(np.mean(first_visit_lateral_errors)) if first_visit_lateral_errors else math.inf
+        ),
+        mean_first_visit_correction_distance=(
+            float(np.mean(first_visit_correction_distances))
+            if first_visit_correction_distances
+            else math.inf
+        ),
+        mean_unsafe_near_plane_stall_time=float(np.mean(unsafe_near_plane_stall_times)),
         mean_route_potential_reduction=float(np.mean(route_potential_reductions)),
         mean_terminal_speed=float(np.mean(terminal_speeds)),
     )
@@ -210,9 +266,7 @@ def evaluate_level3_params(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
-    parser.add_argument(
-        "--profile", choices=("level3_v2", "level3_v2_segment"), default="level3_v2"
-    )
+    parser.add_argument("--profile", choices=LEVEL3_PROFILE_NAMES, default="level3_v2")
     parser.add_argument("--episodes", type=int, default=5_000)
     parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=30_000)

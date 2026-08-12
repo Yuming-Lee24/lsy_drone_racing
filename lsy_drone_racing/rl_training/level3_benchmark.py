@@ -17,7 +17,7 @@ from lsy_drone_racing.rl_training.level3_algorithm import (
     build_level3_optimizer,
     make_level3_ppo_update,
 )
-from lsy_drone_racing.rl_training.level3_config import get_level3_profile
+from lsy_drone_racing.rl_training.level3_config import LEVEL3_PROFILE_NAMES, get_level3_profile
 from lsy_drone_racing.rl_training.level3_environment import (
     initialize_level3_runner,
     make_level3_rollout_collector,
@@ -33,9 +33,7 @@ from lsy_drone_racing.rl_training.runtime import PROJECT_ROOT
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--profile", choices=("level3_v2", "level3_v2_segment"), default="level3_v2"
-    )
+    parser.add_argument("--profile", choices=LEVEL3_PROFILE_NAMES, default="level3_v2")
     parser.add_argument("--timesteps", type=int, default=10_000_000)
     parser.add_argument("--num-envs", type=int, default=1024)
     parser.add_argument("--num-steps", type=int, default=128)
@@ -146,7 +144,7 @@ def main() -> None:
     default_name = (
         "level3_v2_final_jax_10m.json"
         if args.profile == "level3_v2"
-        else "level3_v2_segment_jax_10m.json"
+        else f"{args.profile}_jax_10m.json"
     )
     output = args.output or PROJECT_ROOT / "saves" / "jax_ppo" / "performance" / default_name
     output.parent.mkdir(parents=True, exist_ok=True)
