@@ -382,6 +382,7 @@ def test_curriculum_schedule_has_expected_mixture_means():
 def test_segment_start_sampling_and_frozen_profile_defaults():
     config = get_level3_profile("level3_v2_segment")
     pregate = get_level3_profile("level3_v3_pregate")
+    crossing_seed = get_level3_profile("level3_v3_crossing_seed")
     samples = sample_segment_start_progress(
         jax.random.key(123), config.segment_reset.start_probabilities, 100_000
     )
@@ -394,6 +395,11 @@ def test_segment_start_sampling_and_frozen_profile_defaults():
     assert pregate.profile == "level3_v3_pregate"
     assert pregate.segment_reset.start_mode == "pre_gate"
     assert pregate.reward.route_progress == 12.0
+    assert crossing_seed.profile == "level3_v3_crossing_seed"
+    assert crossing_seed.segment_reset.entrance_distance_min == 0.12
+    assert crossing_seed.segment_reset.entrance_distance_max == 0.18
+    assert crossing_seed.segment_reset.entrance_speed_min == 0.60
+    assert crossing_seed.segment_reset.entrance_speed_max == 0.90
     assert config.total_timesteps == 500_000_000
     assert config.curriculum_timesteps == 500_000_000
     assert config.num_updates == 3814

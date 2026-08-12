@@ -96,7 +96,9 @@ def test_level3_cpu_rollout_mask_reset_and_full_update():
 def test_level3_gpu_1024_world_rollout_and_full_update():
     if not any(device.platform == "gpu" for device in jax.devices()):
         pytest.skip("JAX GPU backend is unavailable")
-    runner, rollout, metrics, state, _ = run_level3_smoke("gpu", 1024, profile="level3_v3_pregate")
+    runner, rollout, metrics, state, _ = run_level3_smoke(
+        "gpu", 1024, profile="level3_v3_crossing_seed"
+    )
 
     assert rollout.actor_observation.ego.shape == (2, 1024, EGO_DIM)
     assert metrics.done.shape == (2, 1024)
@@ -278,7 +280,7 @@ def test_level3_segment_reverse_gate_full_start_and_evaluation_reset():
 
 @pytest.mark.integration
 def test_level3_pregate_starts_on_entrance_side_and_handles_reverse_gate():
-    config = get_level3_profile("level3_v3_pregate").with_overrides(
+    config = get_level3_profile("level3_v3_crossing_seed").with_overrides(
         device="cpu",
         num_envs=64,
         num_steps=2,
@@ -301,7 +303,7 @@ def test_level3_pregate_starts_on_entrance_side_and_handles_reverse_gate():
     velocity = pregate.sim_data.states.vel[:, 0]
     signed_distance = jnp.sum(delta * directed_normal, axis=-1)
     forward_speed = jnp.sum(velocity * directed_normal, axis=-1)
-    assert bool(jnp.all(signed_distance < -0.24))
+    assert bool(jnp.all(signed_distance < -0.11))
     assert bool(jnp.all(signed_distance >= -config.segment_reset.entrance_distance_max - 1e-5))
     assert bool(jnp.all(forward_speed > 0.0))
 

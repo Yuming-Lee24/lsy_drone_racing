@@ -287,7 +287,17 @@ a micro-curriculum for determining whether PPO can learn the crossing primitive,
 training distribution. Evaluation remains full-start. Run only a 77-update 10M pilot from random
 parameters before designing a mixed full/post/pre-gate curriculum. Its RTX 4070 benchmark passed
 at 182,103.90 end-to-end SPS, 2.16496x the same-environment PyTorch baseline, with 9,511 MiB peak
-GPU memory.
+GPU memory. Its 10M pilot nevertheless failed: target-gate pass rates peaked at only 0.9-3.3% and
+ended at 0-2.0%. A reachability probe found that the initialized deterministic/stochastic policies
+passed only 3/1102 and 0/1813 completed episodes respectively, so this reset was still too far from
+the gate to seed the crossing behavior.
+
+`level3_v3_crossing_seed` is the corrected diagnostic profile. It places training starts only
+0.12-0.18 m before the directed gate plane, uses +/-0.015 m offsets, and seeds 0.60-0.90 m/s forward
+speed. Before learning, the same deterministic initialization passed 89.8-91.6% per target gate
+and stochastic sampling passed 77.4-81.5%, proving that positive crossing samples are reachable.
+Use a separate output directory and run only a 77-update 10M pilot; do not overwrite the failed
+`level3_v3_pregate` artifacts or expand to the full budget based on injected-start pass rates alone.
 
 ## Historical Level 2 V2 research notes
 

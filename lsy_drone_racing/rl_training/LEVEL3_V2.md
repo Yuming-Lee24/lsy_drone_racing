@@ -242,4 +242,13 @@ This is a diagnostic crossing micro-curriculum only; formal evaluation continues
 starts. Run 77 updates from random parameters and do not extend the experiment unless local
 target-gate pass rates materially exceed Reward V3. Its RTX 4070 benchmark passed at 182,103.90
 end-to-end SPS and 2.16496x the 84,114.36 SPS same-environment PyTorch reference; peak GPU memory
-was 9,511 MiB.
+was 9,511 MiB. The 10M pilot still failed: target-gate pass rates peaked at only 0.9-3.3% and ended
+at 0-2.0%. An initialized-policy reachability probe produced only 3/1102 deterministic and 0/1813
+stochastic completed-episode passes, so these starts remained too far away to bootstrap crossing.
+
+`level3_v3_crossing_seed` corrects only that diagnostic distribution: 0.12-0.18 m entrance
+distance, +/-0.015 m lateral/vertical offset, and 0.60-0.90 m/s forward speed. A no-learning probe
+passed 89.8-91.6% of deterministic and 77.4-81.5% of stochastic completed episodes across all
+four target gates. This proves reachability but is not itself learned performance. Keep its output
+separate, run only 77 updates, and judge the pilot by whether pass rates remain high while later
+segment completion emerges; formal full-start evaluation remains the headline protocol.

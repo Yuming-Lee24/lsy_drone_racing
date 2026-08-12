@@ -202,7 +202,13 @@ class Level3PPOConfig:
         return config
 
 
-LEVEL3_PROFILE_NAMES = ("level3_v2", "level3_v2_segment", "level3_v3_reward", "level3_v3_pregate")
+LEVEL3_PROFILE_NAMES = (
+    "level3_v2",
+    "level3_v2_segment",
+    "level3_v3_reward",
+    "level3_v3_pregate",
+    "level3_v3_crossing_seed",
+)
 
 
 def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
@@ -224,6 +230,23 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             profile="level3_v3_pregate",
             reward=Level3V3RewardCoefficients(),
             segment_reset=SegmentResetConfig(enabled=True, start_mode="pre_gate"),
+        )
+    elif name == "level3_v3_crossing_seed":
+        config = Level3PPOConfig(
+            profile="level3_v3_crossing_seed",
+            reward=Level3V3RewardCoefficients(),
+            segment_reset=SegmentResetConfig(
+                enabled=True,
+                start_mode="pre_gate",
+                entrance_distance_min=0.12,
+                entrance_distance_max=0.18,
+                fallback_entrance_distances=(0.14, 0.12),
+                entrance_lateral_offset=0.015,
+                entrance_vertical_offset=0.015,
+                entrance_speed_min=0.60,
+                entrance_speed_max=0.90,
+                entrance_velocity_perturbation=0.02,
+            ),
         )
     else:
         raise ValueError(f"Unknown Level 3 profile; expected one of {LEVEL3_PROFILE_NAMES}")
