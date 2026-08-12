@@ -8,6 +8,7 @@ state. The production path does not import Torch, NumPy, SciPy, Gymnasium wrappe
 
 ```bash
 pixi run -e jax-rl-gpu train-jax-ppo --profile fast
+pixi run -e jax-rl-gpu train-jax-ppo --profile fast --disable-early-stopping
 pixi run -e jax-rl-gpu train-jax-ppo --profile safe_fast
 pixi run -e jax-rl-gpu eval-jax-ppo --checkpoint saves/jax_ppo/fast/best --profile fast
 ```

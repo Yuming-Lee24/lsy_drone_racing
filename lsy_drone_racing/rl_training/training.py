@@ -88,6 +88,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--disable-validation", action="store_true")
+    parser.add_argument(
+        "--disable-early-stopping",
+        action="store_true",
+        help="Keep training to the configured budget after the evaluation target is reached.",
+    )
     return parser
 
 
@@ -262,7 +267,7 @@ def train(config: PPOConfig, args: argparse.Namespace) -> None:
                         output / "best", train_state, runner, update, total_steps, config
                     )
                 next_validation += config.validation_interval
-                if meets_target:
+                if meets_target and not args.disable_early_stopping:
                     final, _ = _validation(
                         train_state.params,
                         config,
@@ -286,7 +291,26 @@ def train(config: PPOConfig, args: argparse.Namespace) -> None:
         save_checkpoint(output / "latest", train_state, runner, update, total_steps, config)
         env.close()
 
-    status = "target_reached" if stopped_early else "stopped"
+    if args.disable_early_stopping and update >= maximum_updates:
+        final, _ = _validation(
+            train_state.params,
+            config,
+            config.final_evaluation_episodes,
+            output,
+            total_steps,
+            seed=30_000,
+        )
+        print(
+            f"final success={final['success_rate']:.3f} "
+            f"mean_success_time={final['mean_success_time']:.3f}s"
+        )
+
+    if stopped_early:
+        status = "target_reached"
+    elif update >= maximum_updates:
+        status = "completed"
+    else:
+        status = "stopped"
     print(
         f"Training {status} at {total_steps:,} environment steps. Checkpoint: {output / 'latest'}"
     )
