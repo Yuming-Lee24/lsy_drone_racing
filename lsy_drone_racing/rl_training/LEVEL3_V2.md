@@ -252,3 +252,11 @@ passed 89.8-91.6% of deterministic and 77.4-81.5% of stochastic completed episod
 four target gates. This proves reachability but is not itself learned performance. Keep its output
 separate, run only 77 updates, and judge the pilot by whether pass rates remain high while later
 segment completion emerges; formal full-start evaluation remains the headline protocol.
+
+The 77-update pilot completed 10,092,544 steps stably at 184,089.88 final SPS. Final target-gate
+pass rates were 100%, 98.39%, 100%, and 98.55% for starts 0-3. Start-2 remaining-track completion
+briefly reached 3.33% and ended at zero, while the directly seeded gate-4 completion ended at
+98.55%. Full-start raw and EMA evaluations remained 0/500 with zero gates passed. This validates
+the crossing primitive but not approach or multi-segment racing. Do not extend the injected-only
+profile to 500M; use its checkpoint only as a policy initialization candidate for a separately
+versioned mixed and progressively widened reset curriculum.

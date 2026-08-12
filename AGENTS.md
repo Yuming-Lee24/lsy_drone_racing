@@ -298,6 +298,12 @@ speed. Before learning, the same deterministic initialization passed 89.8-91.6% 
 and stochastic sampling passed 77.4-81.5%, proving that positive crossing samples are reachable.
 Use a separate output directory and run only a 77-update 10M pilot; do not overwrite the failed
 `level3_v3_pregate` artifacts or expand to the full budget based on injected-start pass rates alone.
+The pilot completed 10,092,544 steps stably at 184,089.88 final SPS. Final target-gate pass rates
+were 100%, 98.39%, 100%, and 98.55% for starts 0-3. Start-2 remaining-track completion peaked at
+3.33% but ended at zero; start-3 completion ended at 98.55%. Full-start raw/EMA evaluation remained
+0/500 with zero gates passed. Therefore the crossing primitive is now established, but approach,
+exit recovery, and transitions between gates are not. Do not continue this injected-only profile
+to 500M. The next experiment must mix full, post-gate, and progressively widened pre-gate starts.
 
 ## Historical Level 2 V2 research notes
 
