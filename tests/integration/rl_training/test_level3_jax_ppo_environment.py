@@ -35,6 +35,7 @@ from lsy_drone_racing.rl_training.level3_runtime import (
     initialize_level3_parameters,
 )
 from lsy_drone_racing.rl_training.level3_segment_reset import (
+    CORRIDOR_START,
     FULL_START,
     POST_GATE_START,
     PRE_GATE_START,
@@ -100,7 +101,7 @@ def test_level3_gpu_1024_world_rollout_and_full_update():
     if not any(device.platform == "gpu" for device in jax.devices()):
         pytest.skip("JAX GPU backend is unavailable")
     runner, rollout, metrics, state, _ = run_level3_smoke(
-        "gpu", 1024, profile="level3_v3_mixed_curriculum"
+        "gpu", 1024, profile="level3_v3_route_corridor"
     )
 
     assert rollout.actor_observation.ego.shape == (2, 1024, EGO_DIM)
@@ -110,8 +111,8 @@ def test_level3_gpu_1024_world_rollout_and_full_update():
     assert set(np.asarray(runner.episode_start_progress).tolist()) == {0, 1, 2, 3}
     assert set(np.asarray(runner.episode_start_kind).tolist()) == {
         FULL_START,
-        POST_GATE_START,
         PRE_GATE_START,
+        CORRIDOR_START,
     }
 
 
@@ -417,6 +418,91 @@ def test_level3_mixed_curriculum_combines_full_post_and_progressive_pregate_star
     assert np.all(np.asarray(wide_signed)[wide_pre_mask] >= -1.001)
     wide_frequencies = np.bincount(wide_kind, minlength=3) / wide_kind.size
     np.testing.assert_allclose(wide_frequencies, (0.45, 0.30, 0.25), atol=0.05)
+    env.close()
+
+
+@pytest.mark.integration
+def test_level3_route_corridor_spans_source_to_gate_entrance():
+    config = get_level3_profile("level3_v3_route_corridor").with_overrides(
+        device="cpu",
+        num_envs=1024,
+        num_steps=2,
+        num_minibatches=1,
+        update_epochs=1,
+        total_timesteps=2048,
+    )
+    env = create_level3_environment(config)
+
+    def reset_at(progress: float, seed: int) -> tuple:
+        source, _ = env._reset(
+            env.data.replace(curriculum_progress=jnp.asarray(progress, dtype=jnp.float32)),
+            seed=seed,
+        )
+        reset, start, kind = apply_level3_segment_reset(source, config, mixed_segment=True)
+        return source, reset, np.asarray(start), np.asarray(kind)
+
+    source, reset, start, kind = reset_at(0.0, 1001)
+    frequencies = np.bincount(kind, minlength=4) / kind.size
+    np.testing.assert_allclose(frequencies, (0.10, 0.0, 0.30, 0.60), atol=0.04)
+    np.testing.assert_array_equal(start[kind == FULL_START], 0)
+    assert np.all((start[kind == CORRIDOR_START] >= 0) & (start[kind == CORRIDOR_START] <= 3))
+    np.testing.assert_array_equal(
+        np.asarray(reset.n_gates_passed[:, 0])[kind == CORRIDOR_START],
+        start[kind == CORRIDOR_START],
+    )
+    np.testing.assert_allclose(
+        reset.sim_data.states.pos[kind == FULL_START, 0],
+        source.sim_data.states.pos[kind == FULL_START, 0],
+    )
+    assert bool(
+        jnp.all(
+            _candidate_is_safe(reset, reset.sim_data.states.pos[:, 0], config)
+            | jnp.asarray(kind == FULL_START)
+        )
+    )
+
+    world = jnp.arange(config.num_envs)
+    target = jnp.asarray(start)
+    target_gate_id = reset.gate_sequence[target]
+    target_rotation = quaternion_to_matrix(reset.gates_quat[world, target_gate_id])
+    target_direction = reset.gate_sequence_direction[target]
+    target_normal = target_rotation[..., :, 0] * target_direction[:, None]
+    target_center = reset.gates_pos[world, target_gate_id]
+    target_signed = jnp.sum(
+        (reset.sim_data.states.pos[:, 0] - target_center) * target_normal, axis=-1
+    )
+    corridor_mask = kind == CORRIDOR_START
+    assert np.all(np.asarray(target_signed)[corridor_mask] < -0.10)
+    corridor_speed = np.linalg.norm(
+        np.asarray(reset.sim_data.states.vel[:, 0])[corridor_mask], axis=-1
+    )
+    assert np.all((corridor_speed > 0.55) & (corridor_speed < 0.95))
+
+    late_source, late_reset, late_start, late_kind = reset_at(0.10, 1002)
+    late_mask = late_kind == CORRIDOR_START
+    late_world = np.arange(config.num_envs)
+    previous = np.clip(late_start - 1, 0, 3)
+    previous_gate_id = np.asarray(late_reset.gate_sequence)[previous]
+    previous_rotation = quaternion_to_matrix(
+        late_reset.gates_quat[jnp.asarray(late_world), jnp.asarray(previous_gate_id)]
+    )
+    previous_direction = np.asarray(late_reset.gate_sequence_direction)[previous]
+    previous_normal = np.asarray(previous_rotation[..., :, 0]) * previous_direction[:, None]
+    previous_center = np.asarray(late_reset.gates_pos)[late_world, previous_gate_id]
+    previous_exit = previous_center + (
+        config.segment_reset.corridor_source_exit_distance * previous_normal
+    )
+    route_source = np.where(
+        (late_start == 0)[:, None], np.asarray(late_source.sim_data.states.pos[:, 0]), previous_exit
+    )
+    late_target_id = np.asarray(late_reset.gate_sequence)[late_start]
+    late_target = np.asarray(late_reset.gates_pos)[late_world, late_target_id]
+    source_distance = np.linalg.norm(late_target - route_source, axis=-1)
+    sampled_distance = np.linalg.norm(
+        np.asarray(late_reset.sim_data.states.pos[:, 0]) - route_source, axis=-1
+    )
+    normalized_distance = sampled_distance / np.maximum(source_distance, 1e-6)
+    assert np.any(normalized_distance[late_mask] < 0.25)
     env.close()
 
 

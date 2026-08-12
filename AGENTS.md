@@ -12,11 +12,12 @@ Level 2 controller configuration added in `6bd683c`.
 The active research objective is now a reliability-first structured V2 policy for the original,
 fully randomized Level 3 environment. The frozen design and current measured status are in
 `lsy_drone_racing/rl_training/LEVEL3_V2.md`; treat that document as authoritative for V2 feature,
-reward, curriculum, network, and evaluation semantics. The 50M reward4 pilot demonstrated stable
-gate completion but no full four-gate success. The active experiment is now the from-scratch
-`level3_v2_segment` mixed-start profile; do not launch its 50M pilot merely because implementation
-work is complete, and do not continue it to 500M without explicit user authorization. The existing
-Level 2 V1 baseline remains supported and must not regress.
+reward, curriculum, network, and evaluation semantics. Endpoint-only segment curricula preserved
+the learned crossing primitive but failed to teach approach and turn acquisition. The active
+experiment is `level3_v3_route_corridor`: policy-initialize it from the raw mixed-curriculum
+checkpoint, reset all other state and the 500M clock, and run only its authorized 382-update 50M
+pilot before deciding whether to continue. The existing Level 2 V1 baseline remains supported and
+must not regress.
 
 ## User constraints
 
@@ -327,6 +328,20 @@ first gate from the race start. The next bounded experiment should sample a cont
 corridor from the original/previous-gate exit to the next-gate entrance, including increasing
 heading and lateral errors, rather than adding more endpoint-only full/post/pre training.
 
+`level3_v3_route_corridor` implements that bounded experiment without changing Obs V2, Reward V3,
+PPO, random track generation, collision termination, or formal evaluation. At each transformed
+reset it samples target gates 1-4 uniformly and places the vehicle continuously between the
+original start/previous directed gate exit and the next directed gate entrance. During the first
+10% of the unchanged 500M clock, corridor coverage expands from the final 35% to the full route;
+entrance distance, lateral/vertical error, velocity noise, attitude error, and angular velocity
+expand at the same time. Full/corridor/crossing-seed probabilities are 10/60/30% initially,
+20/65/15% at 10%, 45/50/5% at 40%, and 70/30/0% from 80%. Start kind 3 identifies corridor
+episodes in checkpoints and metrics. Evaluation still forces original starts. Its RTX 4070 10M
+benchmark passed at 180,497.43 SPS, 2.14888x the 83,996.06 SPS stored PyTorch reference, with
+438,513.02 rollout SPS, 9,511 MiB peak memory, and 11.395/1.367 seconds rollout/optimizer compile
+time. The ignored report is
+`saves/jax_ppo/performance/level3_v3_route_corridor_jax_10m.json`.
+
 ## Historical Level 2 V2 research notes
 
 The following list predates the selected Level 3 design. Do not implement it over the authoritative
@@ -480,6 +495,12 @@ pixi run -e jax-rl-gpu eval-level3-jax-ppo \
   --profile level3_v2_segment \
   --checkpoint saves/jax_ppo/level3_v2_segment/best_ema \
   --episodes 5000 --seed 30000
+
+# Continuous approach-corridor 50M pilot; initialize raw policy only.
+pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v3_route_corridor \
+  --initialize-policy saves/jax_ppo/level3_v3_mixed_curriculum/latest \
+  --max-updates 382 --skip-final-evaluation
 ```
 
 Compilation time must be reported separately from steady throughput. If a V2 change fails the 2x
@@ -540,6 +561,8 @@ In addition to existing regression tests, add tests for:
   visited/nominal semantics, elapsed time, and per-start reward/history initialization
 - segment masked reset and diagnostics, full-start equivalence, evaluation full-start enforcement,
   format-2/3 policy-only compatibility/format-4 exact resume, and lexicographic checkpoint selection
+- continuous corridor sampling from original/previous-exit sources, directed/reverse target
+  entrance geometry, curriculum coverage expansion, start-kind diagnostics, and full-start fallback
 
 ## Git and change discipline
 

@@ -387,6 +387,7 @@ def test_segment_start_sampling_and_frozen_profile_defaults():
     config = get_level3_profile("level3_v2_segment")
     pregate = get_level3_profile("level3_v3_pregate")
     crossing_seed = get_level3_profile("level3_v3_crossing_seed")
+    route_corridor = get_level3_profile("level3_v3_route_corridor")
     samples = sample_segment_start_progress(
         jax.random.key(123), config.segment_reset.start_probabilities, 100_000
     )
@@ -404,6 +405,11 @@ def test_segment_start_sampling_and_frozen_profile_defaults():
     assert crossing_seed.segment_reset.entrance_distance_max == 0.18
     assert crossing_seed.segment_reset.entrance_speed_min == 0.60
     assert crossing_seed.segment_reset.entrance_speed_max == 0.90
+    assert route_corridor.profile == "level3_v3_route_corridor"
+    assert route_corridor.segment_reset.start_mode == "route_corridor"
+    assert route_corridor.segment_reset.corridor_fraction_min_start == 0.65
+    assert route_corridor.segment_reset.corridor_fraction_min_end == 0.0
+    assert route_corridor.allow_policy_initialization
     assert config.total_timesteps == 500_000_000
     assert config.curriculum_timesteps == 500_000_000
     assert config.num_updates == 3814
@@ -429,6 +435,25 @@ def test_mixed_start_curriculum_probabilities_and_sampling():
     np.testing.assert_allclose(frequencies, (0.10, 0.20, 0.70), atol=0.01)
     assert config.segment_reset.start_mode == "mixed_curriculum"
     assert config.allow_policy_initialization
+
+
+@pytest.mark.unit
+def test_route_corridor_curriculum_probabilities_and_sampling():
+    config = get_level3_profile("level3_v3_route_corridor")
+    expected = (
+        (0.0, (0.10, 0.60, 0.30)),
+        (0.10, (0.20, 0.65, 0.15)),
+        (0.40, (0.45, 0.50, 0.05)),
+        (0.80, (0.70, 0.30, 0.0)),
+    )
+    for progress, probabilities in expected:
+        np.testing.assert_allclose(
+            mixed_start_probabilities(jnp.asarray(progress), config), probabilities, atol=1e-6
+        )
+
+    samples = sample_mixed_start_kind(jax.random.key(654), jnp.asarray(0.0), config, 100_000)
+    frequencies = np.bincount(np.asarray(samples), minlength=4) / samples.size
+    np.testing.assert_allclose(frequencies, (0.10, 0.0, 0.30, 0.60), atol=0.01)
 
 
 @pytest.mark.unit

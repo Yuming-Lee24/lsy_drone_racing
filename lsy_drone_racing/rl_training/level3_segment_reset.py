@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 FULL_START = 0
 POST_GATE_START = 1
 PRE_GATE_START = 2
+CORRIDOR_START = 3
 
 
 def _normalize(value: Array) -> Array:
@@ -50,7 +51,7 @@ def sample_segment_start_progress(
 
 
 def mixed_start_probabilities(progress: Array, config: Level3PPOConfig) -> Array:
-    """Interpolate ``[full, post-gate, pre-gate]`` probabilities on the fixed 500M clock."""
+    """Interpolate the profile's three start-class probabilities on the fixed 500M clock."""
     segment = config.segment_reset
     knots = segment.mixed_progress_knots
     rows = jnp.asarray(
@@ -80,9 +81,12 @@ def mixed_start_probabilities(progress: Array, config: Level3PPOConfig) -> Array
 def sample_mixed_start_kind(
     key: Array, progress: Array, config: Level3PPOConfig, count: int
 ) -> Array:
-    """Sample full/post/pre start kinds from the on-device curriculum distribution."""
+    """Sample the profile's on-device curriculum start kinds."""
     probabilities = mixed_start_probabilities(progress, config)
-    return jax.random.categorical(key, jnp.log(probabilities), shape=(count,)).astype(jnp.int32)
+    sampled = jax.random.categorical(key, jnp.log(probabilities), shape=(count,)).astype(jnp.int32)
+    if config.segment_reset.start_mode == "route_corridor":
+        sampled = jnp.where(sampled == POST_GATE_START, CORRIDOR_START, sampled)
+    return sampled
 
 
 def _ordered_track(data: EnvData) -> tuple[Array, Array, Array]:
@@ -128,6 +132,332 @@ def _candidate_is_safe(data: EnvData, candidate: Array, config: Level3PPOConfig)
     return boundary_safe & gate_safe & obstacle_safe
 
 
+def _replace_synthesized_state(
+    data: EnvData,
+    config: Level3PPOConfig,
+    reset_mask: Array,
+    candidate: Array,
+    velocity: Array,
+    quaternion: Array,
+    angular_velocity: Array,
+    elapsed_steps: Array,
+    sampled_start: Array,
+    sampled_kind: Array,
+    candidate_valid: Array,
+    next_key: Array,
+) -> tuple[EnvData, Array, Array]:
+    """Install one synthesized reset state while preserving ordinary-reset controller state."""
+    segment = config.segment_reset
+    segment_mask = reset_mask & (sampled_kind != FULL_START) & candidate_valid
+    effective_start = jnp.where(segment_mask, sampled_start, 0).astype(jnp.int32)
+    effective_kind = jnp.where(segment_mask, sampled_kind, FULL_START).astype(jnp.int32)
+    elapsed_steps = jnp.where(segment_mask, elapsed_steps, 0)
+    state_mask = segment_mask[:, None, None]
+    scalar_state_mask = segment_mask[:, None]
+
+    states = data.sim_data.states.replace(
+        pos=jnp.where(state_mask, candidate[:, None], data.sim_data.states.pos),
+        quat=jnp.where(state_mask, quaternion[:, None], data.sim_data.states.quat),
+        vel=jnp.where(state_mask, velocity[:, None], data.sim_data.states.vel),
+        ang_vel=jnp.where(state_mask, angular_velocity[:, None], data.sim_data.states.ang_vel),
+        force=jnp.where(state_mask, 0.0, data.sim_data.states.force),
+        torque=jnp.where(state_mask, 0.0, data.sim_data.states.torque),
+    )
+    derivatives = data.sim_data.states_deriv.replace(
+        vel=jnp.where(state_mask, velocity[:, None], data.sim_data.states_deriv.vel),
+        ang_vel=jnp.where(
+            state_mask, angular_velocity[:, None], data.sim_data.states_deriv.ang_vel
+        ),
+        acc=jnp.where(state_mask, 0.0, data.sim_data.states_deriv.acc),
+        ang_acc=jnp.where(state_mask, 0.0, data.sim_data.states_deriv.ang_acc),
+        rotor_acc=jnp.where(segment_mask[:, None, None], 0.0, data.sim_data.states_deriv.rotor_acc),
+    )
+    controls = data.sim_data.controls
+    if controls.attitude is not None:
+        controls = controls.replace(
+            attitude=controls.attitude.replace(
+                r_int_error=jnp.where(state_mask, 0.0, controls.attitude.r_int_error),
+                last_ang_vel=jnp.where(state_mask, 0.0, controls.attitude.last_ang_vel),
+            )
+        )
+    simulation_steps_per_control_step = int(
+        data.sim_data.core.freq // segment.environment_frequency
+    )
+    core = data.sim_data.core.replace(
+        rng_key=next_key,
+        steps=jnp.where(
+            scalar_state_mask,
+            elapsed_steps[:, None] * simulation_steps_per_control_step,
+            data.sim_data.core.steps,
+        ),
+        mjx_synced=jnp.asarray(False),
+    )
+    sim_data = data.sim_data.replace(
+        states=states, states_deriv=derivatives, controls=controls, core=core
+    )
+
+    sequence_length = data.gate_sequence.shape[0]
+    physical_gate = jnp.arange(data.gates_pos.shape[1])[None, None, :]
+    passed_in_sequence = jnp.arange(sequence_length)[None, :, None] < effective_start[:, None, None]
+    sequence_gate = data.gate_sequence[None, :, None] == physical_gate
+    passed_gate = jnp.any(passed_in_sequence & sequence_gate, axis=1)
+    gate_in_sensor_range = (
+        jnp.linalg.norm(candidate[:, None, :2] - data.gates_pos[..., :2], axis=-1)
+        < data.sensor_range[0]
+    )
+    obstacle_in_sensor_range = (
+        jnp.linalg.norm(candidate[:, None, :2] - data.obstacles_pos[..., :2], axis=-1)
+        < data.sensor_range[0]
+    )
+
+    return (
+        data.replace(
+            sim_data=sim_data,
+            n_gates_passed=jnp.where(
+                segment_mask[:, None], effective_start[:, None], data.n_gates_passed
+            ),
+            last_drone_pos=jnp.where(state_mask, candidate[:, None], data.last_drone_pos),
+            takeoff_pos=jnp.where(state_mask, candidate[:, None], data.takeoff_pos),
+            steps=jnp.where(segment_mask, elapsed_steps, data.steps),
+            gates_visited=jnp.where(
+                segment_mask[:, None, None],
+                (passed_gate | gate_in_sensor_range)[:, None],
+                data.gates_visited,
+            ),
+            obstacles_visited=jnp.where(
+                segment_mask[:, None, None],
+                obstacle_in_sensor_range[:, None],
+                data.obstacles_visited,
+            ),
+            disabled_drones=jnp.where(segment_mask[:, None], False, data.disabled_drones),
+            marked_for_reset=jnp.where(segment_mask, False, data.marked_for_reset),
+        ),
+        effective_start,
+        effective_kind,
+    )
+
+
+def _apply_route_corridor_reset(
+    data: EnvData, config: Level3PPOConfig, reset_mask: Array
+) -> tuple[EnvData, Array, Array]:
+    """Sample continuously between a route source and the directed next-gate entrance."""
+    segment = config.segment_reset
+    count = data.sim_data.core.n_worlds
+    keys = jax.random.split(data.sim_data.core.rng_key, 16)
+    next_key = keys[0]
+    sampled_kind = sample_mixed_start_kind(keys[1], data.curriculum_progress, config, count)
+    sampled_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
+    curriculum_fraction = jnp.clip(
+        data.curriculum_progress / segment.corridor_geometry_progress_end, 0.0, 1.0
+    )
+
+    def mix(initial: float, final: float) -> Array:
+        return initial + curriculum_fraction * (final - initial)
+
+    corridor_fraction_min = mix(
+        segment.corridor_fraction_min_start, segment.corridor_fraction_min_end
+    )
+    corridor_fraction = jax.random.uniform(
+        keys[3], (count,), minval=corridor_fraction_min, maxval=1.0
+    )
+    corridor_entrance_distance = jax.random.uniform(
+        keys[4],
+        (count,),
+        minval=mix(
+            segment.corridor_entrance_distance_min_start, segment.corridor_entrance_distance_min_end
+        ),
+        maxval=mix(
+            segment.corridor_entrance_distance_max_start, segment.corridor_entrance_distance_max_end
+        ),
+    )
+    corridor_offset_limit = mix(segment.corridor_offset_start, segment.corridor_offset_end)
+    corridor_lateral = jax.random.uniform(
+        keys[5], (count,), minval=-corridor_offset_limit, maxval=corridor_offset_limit
+    )
+    corridor_vertical = jax.random.uniform(
+        keys[6], (count,), minval=-corridor_offset_limit, maxval=corridor_offset_limit
+    )
+    pre_distance = jax.random.uniform(
+        keys[7],
+        (count,),
+        minval=segment.entrance_distance_min,
+        maxval=segment.entrance_distance_max,
+    )
+    pre_lateral = jax.random.uniform(
+        keys[8],
+        (count,),
+        minval=-segment.entrance_lateral_offset,
+        maxval=segment.entrance_lateral_offset,
+    )
+    pre_vertical = jax.random.uniform(
+        keys[9],
+        (count,),
+        minval=-segment.entrance_vertical_offset,
+        maxval=segment.entrance_vertical_offset,
+    )
+
+    ordered_pos, ordered_quat, ordered_direction = _ordered_track(data)
+    sequence_length = ordered_pos.shape[1]
+    target_index = jnp.clip(sampled_start, 0, sequence_length - 1)
+    previous_index = jnp.clip(target_index - 1, 0, sequence_length - 1)
+    world = jnp.arange(count)
+
+    target_center = ordered_pos[world, target_index]
+    target_rotation = quaternion_to_matrix(ordered_quat[world, target_index])
+    target_direction = ordered_direction[world, target_index]
+    target_normal = target_rotation[..., :, 0] * target_direction[:, None]
+    target_horizontal = target_rotation[..., :, 1] * target_direction[:, None]
+    target_vertical = target_rotation[..., :, 2]
+    approach_point = target_center - corridor_entrance_distance[:, None] * target_normal
+
+    previous_center = ordered_pos[world, previous_index]
+    previous_rotation = quaternion_to_matrix(ordered_quat[world, previous_index])
+    previous_direction = ordered_direction[world, previous_index]
+    previous_normal = previous_rotation[..., :, 0] * previous_direction[:, None]
+    previous_exit = previous_center + segment.corridor_source_exit_distance * previous_normal
+    original_start = data.sim_data.states.pos[:, 0]
+    source = jnp.where((target_index == 0)[:, None], original_start, previous_exit)
+
+    route_delta = approach_point - source
+    route_length = jnp.linalg.norm(route_delta, axis=-1)
+    route_direction = _normalize(route_delta)
+    world_up = jnp.broadcast_to(
+        jnp.asarray((0.0, 0.0, 1.0), dtype=jnp.float32), route_direction.shape
+    )
+    raw_route_lateral = jnp.cross(world_up, route_direction)
+    route_lateral = _normalize(
+        jnp.where(
+            (jnp.linalg.norm(raw_route_lateral, axis=-1) > 1e-4)[:, None],
+            raw_route_lateral,
+            target_horizontal,
+        )
+    )
+    route_vertical = _normalize(jnp.cross(route_direction, route_lateral))
+    centered_corridor = source + corridor_fraction[:, None] * route_delta
+    corridor_candidate = (
+        centered_corridor
+        + corridor_lateral[:, None] * route_lateral
+        + corridor_vertical[:, None] * route_vertical
+    )
+
+    pre_candidate = (
+        target_center
+        - pre_distance[:, None] * target_normal
+        + pre_lateral[:, None] * target_horizontal
+        + pre_vertical[:, None] * target_vertical
+    )
+    pre_fallback_1 = target_center - segment.fallback_entrance_distances[0] * target_normal
+    pre_fallback_2 = target_center - segment.fallback_entrance_distances[1] * target_normal
+    corridor = sampled_kind == CORRIDOR_START
+    random_candidate = jnp.where(corridor[:, None], corridor_candidate, pre_candidate)
+    fallback_1 = jnp.where(corridor[:, None], centered_corridor, pre_fallback_1)
+    fallback_2 = jnp.where(corridor[:, None], approach_point, pre_fallback_2)
+    safe_random = _candidate_is_safe(data, random_candidate, config)
+    safe_fallback_1 = _candidate_is_safe(data, fallback_1, config)
+    safe_fallback_2 = _candidate_is_safe(data, fallback_2, config)
+    candidate = jnp.where(
+        safe_random[:, None],
+        random_candidate,
+        jnp.where(safe_fallback_1[:, None], fallback_1, fallback_2),
+    )
+    candidate_valid = safe_random | safe_fallback_1 | safe_fallback_2
+
+    gate_direction = _normalize(target_center - candidate)
+    turn_blend = jnp.square(corridor_fraction)
+    corridor_velocity_direction = _normalize(
+        (1.0 - turn_blend[:, None]) * route_direction + turn_blend[:, None] * gate_direction
+    )
+    travel_direction = jnp.where(corridor[:, None], corridor_velocity_direction, gate_direction)
+    speed_min = jnp.where(
+        corridor,
+        mix(segment.corridor_speed_min_start, segment.corridor_speed_min_end),
+        segment.entrance_speed_min,
+    )
+    speed_max = jnp.where(
+        corridor,
+        mix(segment.corridor_speed_max_start, segment.corridor_speed_max_end),
+        segment.entrance_speed_max,
+    )
+    speed = jax.random.uniform(keys[10], (count,), minval=speed_min, maxval=speed_max)
+    velocity_perturbation = jnp.where(
+        corridor,
+        mix(
+            segment.corridor_velocity_perturbation_start, segment.corridor_velocity_perturbation_end
+        ),
+        segment.entrance_velocity_perturbation,
+    )
+    velocity_lateral = jax.random.uniform(
+        keys[11], (count,), minval=-velocity_perturbation, maxval=velocity_perturbation
+    )
+    velocity_vertical = jax.random.uniform(
+        keys[12], (count,), minval=-velocity_perturbation, maxval=velocity_perturbation
+    )
+    lateral_axis = jnp.where(corridor[:, None], route_lateral, target_horizontal)
+    vertical_axis = jnp.where(corridor[:, None], route_vertical, target_vertical)
+    velocity = (
+        speed[:, None] * travel_direction
+        + velocity_lateral[:, None] * lateral_axis
+        + velocity_vertical[:, None] * vertical_axis
+    ).astype(jnp.float32)
+
+    attitude_noise = jax.random.uniform(keys[13], (count, 3), minval=-1.0, maxval=1.0)
+    yaw_limit = jnp.where(
+        corridor,
+        mix(segment.corridor_yaw_perturbation_start, segment.corridor_yaw_perturbation_end),
+        segment.yaw_perturbation,
+    )
+    roll_pitch_limit = jnp.where(
+        corridor,
+        mix(segment.corridor_roll_pitch_start, segment.corridor_roll_pitch_end),
+        segment.roll_pitch_perturbation,
+    )
+    yaw = jnp.arctan2(velocity[:, 1], velocity[:, 0]) + attitude_noise[:, 2] * yaw_limit
+    quaternion = _euler_to_quaternion(
+        attitude_noise[:, 0] * roll_pitch_limit, attitude_noise[:, 1] * roll_pitch_limit, yaw
+    )
+    angular_limit = jnp.where(
+        corridor,
+        mix(segment.corridor_angular_velocity_start, segment.corridor_angular_velocity_end),
+        segment.angular_velocity,
+    )
+    angular_velocity = jax.random.uniform(
+        keys[14], (count, 3), minval=-angular_limit[:, None], maxval=angular_limit[:, None]
+    )
+    elapsed_scale = jax.random.uniform(
+        keys[15], (count,), minval=segment.elapsed_scale_min, maxval=segment.elapsed_scale_max
+    )
+    first_leg = jnp.linalg.norm(ordered_pos[:, 0] - original_start, axis=-1)
+    between_gates = jnp.linalg.norm(ordered_pos[:, 1:] - ordered_pos[:, :-1], axis=-1)
+    cumulative_route = jnp.cumsum(
+        jnp.concatenate((first_leg[:, None], between_gates), axis=1), axis=1
+    )
+    base_distance = jnp.where(target_index > 0, cumulative_route[world, previous_index], 0.0)
+    corridor_travelled = base_distance + corridor_fraction * route_length
+    pre_travelled = jnp.maximum(cumulative_route[world, target_index] - pre_distance, 0.0)
+    travelled_distance = jnp.where(corridor, corridor_travelled, pre_travelled)
+    elapsed_seconds = (
+        segment.elapsed_base_seconds + travelled_distance / segment.route_speed_estimate
+    ) * elapsed_scale
+    elapsed_steps = jnp.rint(elapsed_seconds * segment.environment_frequency).astype(jnp.int32)
+    elapsed_steps = jnp.minimum(
+        elapsed_steps, config.max_episode_steps - segment.minimum_remaining_steps
+    )
+    return _replace_synthesized_state(
+        data,
+        config,
+        reset_mask,
+        candidate,
+        velocity,
+        quaternion,
+        angular_velocity,
+        elapsed_steps,
+        sampled_start,
+        sampled_kind,
+        candidate_valid,
+        next_key,
+    )
+
+
 def apply_level3_segment_reset(
     data: EnvData, config: Level3PPOConfig, mask: Array | None = None, *, mixed_segment: bool
 ) -> tuple[EnvData, Array, Array]:
@@ -138,8 +468,8 @@ def apply_level3_segment_reset(
     non-zero post-gate start progress. The diagnostic ``pre_gate`` mode instead transforms every
     world to the entrance side of its sampled target gate. If all three candidates are unsafe,
     that world safely falls back to the original start and reports start progress zero. The third
-    return value is the start kind (0 full, 1 post-gate, 2 pre-gate), which also identifies
-    transformed worlds when a pre-gate gate-1 start has legitimate progress zero.
+    return value is the start kind (0 full, 1 post-gate, 2 pre-gate, 3 route corridor), which also
+    identifies transformed worlds when a gate-1 start has legitimate progress zero.
     """
     count = data.sim_data.core.n_worlds
     reset_mask = jnp.ones((count,), dtype=bool) if mask is None else mask
@@ -148,6 +478,8 @@ def apply_level3_segment_reset(
         return data, zeros, zeros
 
     segment = config.segment_reset
+    if segment.start_mode == "route_corridor":
+        return _apply_route_corridor_reset(data, config, reset_mask)
     keys = jax.random.split(data.sim_data.core.rng_key, 14)
     next_key = keys[0]
     pre_distance_min = segment.entrance_distance_min
@@ -284,10 +616,6 @@ def apply_level3_segment_reset(
         jnp.where(safe_fallback_1[:, None], fallback_1, fallback_2),
     )
     candidate_valid = safe_random | safe_fallback_1 | safe_fallback_2
-    eligible = sampled_kind != FULL_START
-    segment_mask = reset_mask & eligible & candidate_valid
-    effective_start = jnp.where(segment_mask, sampled_start, 0).astype(jnp.int32)
-    effective_kind = jnp.where(segment_mask, sampled_kind, FULL_START).astype(jnp.int32)
 
     target_center = ordered_pos[world, target_index]
     next_direction = _normalize(target_center - candidate)
@@ -327,86 +655,17 @@ def apply_level3_segment_reset(
     elapsed_steps = jnp.minimum(
         elapsed_steps, config.max_episode_steps - segment.minimum_remaining_steps
     )
-    elapsed_steps = jnp.where(segment_mask, elapsed_steps, 0)
-
-    state_mask = segment_mask[:, None, None]
-    scalar_state_mask = segment_mask[:, None]
-    states = data.sim_data.states.replace(
-        pos=jnp.where(state_mask, candidate[:, None], data.sim_data.states.pos),
-        quat=jnp.where(state_mask, quaternion[:, None], data.sim_data.states.quat),
-        vel=jnp.where(state_mask, velocity[:, None], data.sim_data.states.vel),
-        ang_vel=jnp.where(state_mask, angular_velocity[:, None], data.sim_data.states.ang_vel),
-        force=jnp.where(state_mask, 0.0, data.sim_data.states.force),
-        torque=jnp.where(state_mask, 0.0, data.sim_data.states.torque),
-    )
-    derivatives = data.sim_data.states_deriv.replace(
-        vel=jnp.where(state_mask, velocity[:, None], data.sim_data.states_deriv.vel),
-        ang_vel=jnp.where(
-            state_mask, angular_velocity[:, None], data.sim_data.states_deriv.ang_vel
-        ),
-        acc=jnp.where(state_mask, 0.0, data.sim_data.states_deriv.acc),
-        ang_acc=jnp.where(state_mask, 0.0, data.sim_data.states_deriv.ang_acc),
-        rotor_acc=jnp.where(segment_mask[:, None, None], 0.0, data.sim_data.states_deriv.rotor_acc),
-    )
-    controls = data.sim_data.controls
-    if controls.attitude is not None:
-        controls = controls.replace(
-            attitude=controls.attitude.replace(
-                r_int_error=jnp.where(state_mask, 0.0, controls.attitude.r_int_error),
-                last_ang_vel=jnp.where(state_mask, 0.0, controls.attitude.last_ang_vel),
-            )
-        )
-    simulation_steps_per_control_step = int(
-        data.sim_data.core.freq // segment.environment_frequency
-    )
-    core = data.sim_data.core.replace(
-        rng_key=next_key,
-        steps=jnp.where(
-            scalar_state_mask,
-            elapsed_steps[:, None] * simulation_steps_per_control_step,
-            data.sim_data.core.steps,
-        ),
-        mjx_synced=jnp.asarray(False),
-    )
-    sim_data = data.sim_data.replace(
-        states=states, states_deriv=derivatives, controls=controls, core=core
-    )
-
-    physical_gate = jnp.arange(data.gates_pos.shape[1])[None, None, :]
-    passed_in_sequence = jnp.arange(sequence_length)[None, :, None] < effective_start[:, None, None]
-    sequence_gate = data.gate_sequence[None, :, None] == physical_gate
-    passed_gate = jnp.any(passed_in_sequence & sequence_gate, axis=1)
-    gate_in_sensor_range = (
-        jnp.linalg.norm(candidate[:, None, :2] - data.gates_pos[..., :2], axis=-1)
-        < data.sensor_range[0]
-    )
-    obstacle_in_sensor_range = (
-        jnp.linalg.norm(candidate[:, None, :2] - data.obstacles_pos[..., :2], axis=-1)
-        < data.sensor_range[0]
-    )
-    segment_gate_visited = passed_gate | gate_in_sensor_range
-    segment_obstacle_visited = obstacle_in_sensor_range
-
-    return (
-        data.replace(
-            sim_data=sim_data,
-            n_gates_passed=jnp.where(
-                segment_mask[:, None], effective_start[:, None], data.n_gates_passed
-            ),
-            last_drone_pos=jnp.where(state_mask, candidate[:, None], data.last_drone_pos),
-            takeoff_pos=jnp.where(state_mask, candidate[:, None], data.takeoff_pos),
-            steps=jnp.where(segment_mask, elapsed_steps, data.steps),
-            gates_visited=jnp.where(
-                segment_mask[:, None, None], segment_gate_visited[:, None], data.gates_visited
-            ),
-            obstacles_visited=jnp.where(
-                segment_mask[:, None, None],
-                segment_obstacle_visited[:, None],
-                data.obstacles_visited,
-            ),
-            disabled_drones=jnp.where(segment_mask[:, None], False, data.disabled_drones),
-            marked_for_reset=jnp.where(segment_mask, False, data.marked_for_reset),
-        ),
-        effective_start,
-        effective_kind,
+    return _replace_synthesized_state(
+        data,
+        config,
+        reset_mask,
+        candidate,
+        velocity,
+        quaternion,
+        angular_velocity,
+        elapsed_steps,
+        sampled_start,
+        sampled_kind,
+        candidate_valid,
+        next_key,
     )

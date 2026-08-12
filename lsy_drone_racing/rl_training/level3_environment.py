@@ -37,6 +37,7 @@ from lsy_drone_racing.rl_training.level3_rewards import (
 )
 from lsy_drone_racing.rl_training.level3_runtime import belief_observation, true_observation
 from lsy_drone_racing.rl_training.level3_segment_reset import (
+    CORRIDOR_START,
     FULL_START,
     POST_GATE_START,
     PRE_GATE_START,
@@ -647,6 +648,7 @@ def summarize_level3_rollout(metrics: Level3RolloutMetrics) -> dict[str, Array]:
         (FULL_START, "full"),
         (POST_GATE_START, "post_gate"),
         (PRE_GATE_START, "pre_gate"),
+        (CORRIDOR_START, "corridor"),
     ):
         kind_mask = metrics.done & (metrics.episode_start_kind == kind)
         kind_count = jnp.sum(kind_mask)

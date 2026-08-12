@@ -183,6 +183,12 @@ pixi run -e jax-rl-gpu train-level3-jax-ppo \
   --profile level3_v3_mixed_curriculum \
   --initialize-policy saves/jax_ppo/level3_v3_crossing_seed/latest \
   --max-updates 382 --skip-final-evaluation
+
+# Continuous approach-corridor 50M pilot initialized from the raw mixed policy.
+pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v3_route_corridor \
+  --initialize-policy saves/jax_ppo/level3_v3_mixed_curriculum/latest \
+  --max-updates 382 --skip-final-evaluation
 ```
 
 Long jobs must use a named `systemd --user` transient service and require `Linger=yes`. Record the
@@ -284,3 +290,24 @@ therefore preserves crossing but fails to bridge endpoint states into navigation
 resume it to 500M. The next curriculum should sample continuously along the approach route from
 the original/previous-gate exit to the next-gate entrance and gradually add heading/lateral error,
 so the policy learns the missing turn-and-acquire behavior rather than seeing only route endpoints.
+
+`level3_v3_route_corridor` implements that next curriculum while leaving observation, Reward V3,
+network, PPO, random Level 3 track generation, collision termination, and formal evaluation
+unchanged. Target progress is uniform over gates 1-4. A corridor source is the original race start
+for gate 1 and the previous gate's directed 0.25 m exit for gates 2-4. The destination is the next
+gate's directed entrance. During the first 10% of the unchanged 500M curriculum clock, the sampled
+route fraction expands from `U(0.65,1)` to `U(0,1)`, while entrance depth expands from 0.12-0.18 m
+to 0.30-0.45 m and position, velocity, yaw, roll/pitch, and angular-velocity errors widen. Unsafe
+candidates use centered route/entrance fallbacks; invalid worlds revert to a true full start.
+
+The full/corridor/crossing-seed mixture is 10/60/30% initially, 20/65/15% at 10% progress,
+45/50/5% at 40%, and 70/30/0% from 80%. Corridor episodes use start kind 3 and retain the same
+per-target and per-kind diagnostics. Policy-only initialization loads the raw mixed checkpoint;
+optimizer, EMA, PRNG, environment and curriculum clock reset. Formal evaluation always uses the
+original start. CPU regressions and the 1024-world full GPU rollout/update test pass. Its RTX 4070
+10M benchmark measured 180,497.43 end-to-end SPS, 438,513.02 rollout SPS, 302,000.15 optimizer
+sample SPS, 2.14888x the stored 83,996.06 SPS PyTorch reference, 100% median GPU use, and 9,511 MiB
+peak memory. XLA rollout/optimizer compilation was 11.395/1.367 seconds and is excluded from
+steady throughput. The report is ignored at
+`saves/jax_ppo/performance/level3_v3_route_corridor_jax_10m.json`. Run exactly 382 updates for the
+first 50M decision point; do not infer formal Level 3 success from corridor metrics.

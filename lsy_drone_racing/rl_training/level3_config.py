@@ -109,6 +109,28 @@ class SegmentResetConfig:
     mixed_entrance_speed_min: float = 0.15
     mixed_entrance_speed_max: float = 0.50
     mixed_entrance_velocity_perturbation: float = 0.08
+    corridor_geometry_progress_end: float = 0.10
+    corridor_fraction_min_start: float = 0.65
+    corridor_fraction_min_end: float = 0.0
+    corridor_source_exit_distance: float = 0.25
+    corridor_entrance_distance_min_start: float = 0.12
+    corridor_entrance_distance_max_start: float = 0.18
+    corridor_entrance_distance_min_end: float = 0.30
+    corridor_entrance_distance_max_end: float = 0.45
+    corridor_offset_start: float = 0.015
+    corridor_offset_end: float = 0.08
+    corridor_speed_min_start: float = 0.60
+    corridor_speed_max_start: float = 0.90
+    corridor_speed_min_end: float = 0.25
+    corridor_speed_max_end: float = 0.70
+    corridor_velocity_perturbation_start: float = 0.02
+    corridor_velocity_perturbation_end: float = 0.08
+    corridor_yaw_perturbation_start: float = 0.10
+    corridor_yaw_perturbation_end: float = 0.35
+    corridor_roll_pitch_start: float = 0.05
+    corridor_roll_pitch_end: float = 0.12
+    corridor_angular_velocity_start: float = 0.20
+    corridor_angular_velocity_end: float = 0.60
 
 
 @dataclass(frozen=True)
@@ -196,9 +218,15 @@ class Level3PPOConfig:
         if abs(sum(probabilities) - 1.0) > 1e-6:
             raise ValueError("segment start_probabilities must sum to one")
         if self.segment_reset.enabled:
-            if self.segment_reset.start_mode not in {"post_gate", "pre_gate", "mixed_curriculum"}:
+            if self.segment_reset.start_mode not in {
+                "post_gate",
+                "pre_gate",
+                "mixed_curriculum",
+                "route_corridor",
+            }:
                 raise ValueError(
-                    "segment start_mode must be 'post_gate', 'pre_gate', or 'mixed_curriculum'"
+                    "segment start_mode must be 'post_gate', 'pre_gate', 'mixed_curriculum', "
+                    "or 'route_corridor'"
                 )
             if self.max_episode_steps <= self.segment_reset.minimum_remaining_steps:
                 raise ValueError("segment reset requires more than minimum_remaining_steps")
@@ -226,6 +254,15 @@ class Level3PPOConfig:
                     raise ValueError("mixed start probabilities must sum to one")
             if not 0.0 < self.segment_reset.mixed_geometry_progress_end <= 1.0:
                 raise ValueError("mixed_geometry_progress_end must be in (0, 1]")
+            if not 0.0 < self.segment_reset.corridor_geometry_progress_end <= 1.0:
+                raise ValueError("corridor_geometry_progress_end must be in (0, 1]")
+            if not (
+                0.0
+                <= self.segment_reset.corridor_fraction_min_end
+                <= self.segment_reset.corridor_fraction_min_start
+                <= 1.0
+            ):
+                raise ValueError("corridor fraction bounds must satisfy 0 <= end <= start <= 1")
 
     def with_overrides(self, **overrides: Any) -> Level3PPOConfig:
         """Return a validated configuration copy."""
@@ -242,6 +279,7 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
     "level3_v3_mixed_curriculum",
+    "level3_v3_route_corridor",
 )
 
 
@@ -297,6 +335,28 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
                 entrance_speed_min=0.60,
                 entrance_speed_max=0.90,
                 entrance_velocity_perturbation=0.02,
+            ),
+            allow_policy_initialization=True,
+        )
+    elif name == "level3_v3_route_corridor":
+        config = Level3PPOConfig(
+            profile="level3_v3_route_corridor",
+            reward=Level3V3RewardCoefficients(),
+            segment_reset=SegmentResetConfig(
+                enabled=True,
+                start_mode="route_corridor",
+                entrance_distance_min=0.12,
+                entrance_distance_max=0.18,
+                fallback_entrance_distances=(0.14, 0.12),
+                entrance_lateral_offset=0.015,
+                entrance_vertical_offset=0.015,
+                entrance_speed_min=0.60,
+                entrance_speed_max=0.90,
+                entrance_velocity_perturbation=0.02,
+                mixed_start_probabilities_0=(0.10, 0.60, 0.30),
+                mixed_start_probabilities_1=(0.20, 0.65, 0.15),
+                mixed_start_probabilities_2=(0.45, 0.50, 0.05),
+                mixed_start_probabilities_3=(0.70, 0.30, 0.0),
             ),
             allow_policy_initialization=True,
         )
