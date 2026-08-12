@@ -88,6 +88,10 @@ scripts = ["tools/setup_acados.sh"]
 evaluate = { cmd = "python scripts/evaluate.py", description = "Evaluate the controller" }
 train-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.training", description = "Train the fused JAX PPO racing policy" }
 eval-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.evaluation", description = "Evaluate a JAX PPO checkpoint deterministically" }
+train-level3-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.level3_training", description = "Train the structured Level 3 JAX PPO policy" }
+eval-level3-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.level3_evaluation", description = "Evaluate a Level 3 V2 checkpoint deterministically" }
+benchmark-level3-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.level3_benchmark", description = "Benchmark fused Level 3 JAX PPO" }
+benchmark-level3-torch-ppo = { cmd = "env XLA_PYTHON_CLIENT_PREALLOCATE=false python -m lsy_drone_racing.rl_training.level3_torch_reference", description = "Benchmark the same Level 3 PPO in eager PyTorch" }
 benchmark-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.benchmark", description = "Benchmark fused JAX PPO and enforce the speedup gate" }
 benchmark-torch-ppo = { cmd = "python -m lsy_drone_racing.rl_training.torch_reference", description = "Benchmark the adapted 25ws PyTorch PPO reference" }
 

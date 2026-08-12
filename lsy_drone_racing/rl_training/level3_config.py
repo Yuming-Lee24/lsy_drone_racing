@@ -1,0 +1,144 @@
+"""Static configuration for the versioned Level 3 JAX PPO policy."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import Any
+
+
+@dataclass(frozen=True)
+class SafetyGeometry:
+    """Physical clearances derived from the Crazyflow collision model.
+
+    The cf21B collision sphere radius is 0.086 m. The gate collision boxes begin 0.20 m
+    from the gate centre, leaving 0.114 m for the sphere centre. We reserve another
+    0.014 m for robustness and therefore target a 0.10 m centre clearance.
+    """
+
+    drone_radius: float = 0.086
+    gate_inner_half_width: float = 0.20
+    gate_safe_half_width: float = 0.10
+    gate_safe_half_height: float = 0.10
+    gate_risk_buffer: float = 0.04
+    obstacle_radius: float = 0.015
+    obstacle_safe_radius: float = 0.13
+    obstacle_risk_buffer: float = 0.12
+    boundary_risk_buffer: float = 0.20
+    approach_distance: float = 0.50
+    exit_distance: float = 0.35
+    gate_prediction_horizon: float = 1.0
+    obstacle_prediction_horizon: float = 1.0
+    route_blend_distance: float = 0.12
+
+
+@dataclass(frozen=True)
+class Level3RewardCoefficients:
+    """Reliability-first Level 3 reward coefficients."""
+
+    route_progress: float = 30.0
+    max_route_progress_per_step: float = 0.20
+    gate: float = 10.0
+    finish: float = 100.0
+    safe_gate_speed: float = 0.30
+    collision: float = 90.0
+    timeout: float = 60.0
+    failure_per_gate: float = 30.0
+    gate_risk: float = 0.15
+    obstacle_risk: float = 0.10
+    boundary_risk: float = 0.05
+    action_delta: float = 0.0
+
+
+@dataclass(frozen=True)
+class Level3PPOConfig:
+    """Shape-stable Level 3 training configuration."""
+
+    profile: str = "level3_v2"
+    observation_version: int = 2
+    config_file: str = "level3.toml"
+    seed: int = 42
+    device: str = "gpu"
+    num_envs: int = 1024
+    num_steps: int = 128
+    total_timesteps: int = 500_000_000
+    curriculum_timesteps: int = 500_000_000
+    num_minibatches: int = 8
+    update_epochs: int = 4
+    learning_rate_start: float = 5e-5
+    learning_rate_end: float = 1e-5
+    gamma: float = 0.995
+    gae_lambda: float = 0.97
+    clip_coef: float = 0.2
+    clip_value_loss: bool = True
+    entropy_coef: float = 0.003
+    value_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    normalize_advantage: bool = True
+    target_kl: float = 0.01
+    ema_decay: float = 0.99
+    entity_dim: int = 128
+    attention_heads: int = 4
+    fusion_dim: int = 256
+    history_length: int = 4
+    max_episode_steps: int = 1500
+    checkpoint_interval: int = 10_000_000
+    validation_interval: int = 10_000_000
+    validation_episodes: int = 500
+    final_evaluation_episodes: int = 5_000
+    success_target: float = 0.90
+    curriculum: bool = True
+    geometry: SafetyGeometry = SafetyGeometry()
+    reward: Level3RewardCoefficients = Level3RewardCoefficients()
+
+    @property
+    def batch_size(self) -> int:
+        """Number of transitions in a rollout."""
+        return self.num_envs * self.num_steps
+
+    @property
+    def minibatch_size(self) -> int:
+        """Number of transitions in one PPO minibatch."""
+        return self.batch_size // self.num_minibatches
+
+    @property
+    def num_updates(self) -> int:
+        """Number of complete updates that fit in the configured budget."""
+        return self.total_timesteps // self.batch_size
+
+    @property
+    def maximum_optimizer_steps(self) -> int:
+        """Upper bound used by the learning-rate schedule."""
+        return self.num_updates * self.update_epochs * self.num_minibatches
+
+    def validate(self) -> None:
+        """Validate static shape and numerical invariants."""
+        if self.observation_version != 2:
+            raise ValueError("Level 3 PPO requires observation_version=2")
+        if self.num_envs <= 0 or self.num_steps <= 0:
+            raise ValueError("num_envs and num_steps must be positive")
+        if self.curriculum_timesteps <= 0:
+            raise ValueError("curriculum_timesteps must be positive")
+        if self.batch_size % self.num_minibatches:
+            raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
+        if self.history_length != 4:
+            raise ValueError("Level 3 V2 has a fixed four-step history")
+        if self.entity_dim % self.attention_heads:
+            raise ValueError("entity_dim must be divisible by attention_heads")
+        if not 0.0 < self.target_kl:
+            raise ValueError("target_kl must be positive")
+
+    def with_overrides(self, **overrides: Any) -> Level3PPOConfig:
+        """Return a validated configuration copy."""
+        values = {key: value for key, value in overrides.items() if value is not None}
+        config = replace(self, **values)
+        config.validate()
+        return config
+
+
+def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
+    """Return the frozen reliability-first Level 3 profile."""
+    if name != "level3_v2":
+        raise ValueError("Unknown Level 3 profile; expected 'level3_v2'")
+    config = Level3PPOConfig()
+    config.validate()
+    return config

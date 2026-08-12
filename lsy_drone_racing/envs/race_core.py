@@ -92,6 +92,8 @@ class EnvData:
         gate_sequence: 0-based gate IDs describing the configured gate order
         gate_sequence_direction: Signed passing directions for each gate-order entry. ``1``
             indicates the positive passing direction, ``-1`` the reverse direction.
+        difficulty: Per-world uncertainty scale used by the optional mixed curriculum.
+        curriculum_progress: Scalar fraction of the current curriculum budget in ``[0, 1]``.
     """
 
     # Dynamic variables
@@ -114,6 +116,8 @@ class EnvData:
     nominal_obstacles_pos: Array
     gate_sequence: Array
     gate_sequence_direction: Array
+    difficulty: Array
+    curriculum_progress: Array
     # sim_data is stored in the env data to allow passing a single tree on which we can operate
     sim_data: SimData
     # Static variables
@@ -173,6 +177,8 @@ class EnvData:
             nominal_obstacles_pos=tiled_obstacles_pos,
             gate_sequence=jp.array(gate_sequence, dtype=int, device=device),
             gate_sequence_direction=jp.array(gate_sequence_direction, dtype=int, device=device),
+            difficulty=jp.ones(n_envs, dtype=jp.float32, device=device),
+            curriculum_progress=jp.ones((), dtype=jp.float32, device=device),
             sim_data=sim_data,
             sensor_range=jp.array([sensor_range], dtype=jp.float32, device=device),
         )
@@ -191,6 +197,7 @@ class EnvSettings:
     disturbances: dict[str, Callable[[Array, Array, Array], Array]]
     randomizations: dict[str, Callable[[Array, Array, Array], Array]]
     device: Device
+    curriculum: bool = False
     autoreset: bool = True  # Can be overridden by single env subclasses
 
     @staticmethod
@@ -204,6 +211,7 @@ class EnvSettings:
         disturbances: dict[str, Callable[[Array, Array, Array], Array]],
         randomizations: dict[str, Callable[[Array, Array, Array], Array]],
         device: Device,
+        curriculum: bool = False,
         autoreset: bool = True,
     ) -> EnvSettings:
         """Create a new environment settings struct from a configuration dictionary."""
@@ -217,6 +225,7 @@ class EnvSettings:
             disturbances=disturbances,
             randomizations=randomizations,
             device=device,
+            curriculum=curriculum,
             autoreset=autoreset,
         )
 
@@ -338,6 +347,7 @@ class RaceCoreEnv:
         seed: int | None = None,
         max_episode_steps: int = 1500,
         device: Literal["cpu", "gpu"] = "cpu",
+        curriculum: bool = False,
     ):
         """Initialize the DroneRacingEnv.
 
@@ -355,6 +365,7 @@ class RaceCoreEnv:
             max_episode_steps: Maximum number of steps per episode. Needs to be tracked manually for
                 vectorized environments.
             device: Device used for the environment and the simulation.
+            curriculum: Whether to sample per-world uncertainty with the Level 3 mixed curriculum.
         """
         super().__init__()
         # 1) Sanitize args
@@ -385,6 +396,10 @@ class RaceCoreEnv:
             device=device,
             xml_path=Path(p) if (p := getattr(sim_config, "xml_path", None)) else None,
         )
+        self.sim.data = self.sim.data.replace(
+            plugins=self.sim.data.plugins
+            | {"curriculum_difficulty": jp.ones(n_envs, dtype=jp.float32)}
+        )
         self._load_track_into_sim(track)
         use_box_collision(self.sim, True)
 
@@ -408,6 +423,7 @@ class RaceCoreEnv:
             disturbances=disturbances,
             randomizations=randomizations,
             device=jax.devices(device)[0],
+            curriculum=curriculum,
             autoreset=True,
         )
         self.data = EnvData.create(
@@ -505,6 +521,7 @@ class RaceCoreEnv:
         randomize_track = build_track_randomization_fn(
             self.settings.randomizations, track=self.track
         )
+        curriculum = self.settings.curriculum
 
         @jax.jit
         def reset(
@@ -513,13 +530,47 @@ class RaceCoreEnv:
             sim_data = data.sim_data
             if seed is not None:
                 sim_data = seed_sim(sim_data, seed, sim_data.core.device)
-            key, subkey = jax.random.split(sim_data.core.rng_key, 2)
+            key, track_key, difficulty_key = jax.random.split(sim_data.core.rng_key, 3)
             sim_data = sim_data.replace(core=sim_data.core.replace(rng_key=key))
             # Randomization of the drone is compiled into the sim reset pipeline, so we don't need
             # to explicitly do it here
             sim_data = sim_reset_fn(sim_data, default_sim_data, mask)
+            if curriculum:
+                sampled = _sample_curriculum_difficulty(
+                    jp.clip(data.curriculum_progress, 0.0, 1.0),
+                    difficulty_key,
+                    sim_data.core.n_worlds,
+                )
+                reset_mask = jp.ones(sampled.shape, dtype=bool) if mask is None else mask
+                difficulty = jp.where(reset_mask, sampled, data.difficulty)
+                sim_data = _scale_sim_uncertainty(sim_data, default_sim_data, difficulty, mask)
+            else:
+                difficulty = jp.ones_like(data.difficulty)
+            sim_data = sim_data.replace(
+                plugins=sim_data.plugins | {"curriculum_difficulty": difficulty}
+            )
             data = data.replace(sim_data=sim_data)
-            data = randomize_track(data, mask, subkey)
+            data = randomize_track(data, mask, track_key)
+            if curriculum:
+                track_scale = difficulty[:, None, None]
+                gates_pos = data.nominal_gates_pos + track_scale * (
+                    data.gates_pos - data.nominal_gates_pos
+                )
+                gates_quat = _blend_quaternion(
+                    data.nominal_gates_quat, data.gates_quat, track_scale
+                )
+                obstacles_pos = data.nominal_obstacles_pos + track_scale * (
+                    data.obstacles_pos - data.nominal_obstacles_pos
+                )
+                if mask is not None:
+                    track_mask = mask[:, None, None]
+                    gates_pos = jp.where(track_mask, gates_pos, data.gates_pos)
+                    gates_quat = jp.where(track_mask, gates_quat, data.gates_quat)
+                    obstacles_pos = jp.where(track_mask, obstacles_pos, data.obstacles_pos)
+                data = data.replace(
+                    gates_pos=gates_pos, gates_quat=gates_quat, obstacles_pos=obstacles_pos
+                )
+            data = data.replace(difficulty=difficulty)
             data = _reset_env_data(data, mask)
             return data, (obs(data), {})
 
@@ -585,7 +636,9 @@ class RaceCoreEnv:
             action = jp.clip(action, action_space.low, action_space.high)
             if "action" in disturbances:
                 key, subkey = jax.random.split(data.sim_data.core.rng_key)
-                action += disturbances["action"](subkey, action.shape)
+                action += (
+                    disturbances["action"](subkey, action.shape) * data.difficulty[:, None, None]
+                )
                 sim_data = data.sim_data.replace(core=data.sim_data.core.replace(rng_key=key))
                 data = data.replace(sim_data=sim_data)
             return data.replace(sim_data=ctrl_fn(data.sim_data, action))
@@ -619,6 +672,34 @@ class RaceCoreEnv:
             return jp.any(contacts[:, None, :] & contact_masks, axis=-1)
 
         return check_contacts
+
+    def build_contact_classification_fn(self) -> Callable[[EnvData], tuple[Array, Array, Array]]:
+        """Build one contact query returning any, gate, and obstacle contact flags.
+
+        This is used by the Level 3 diagnostic path so contact categories are derived from the
+        same MuJoCo collision candidates that terminate the episode, without a second host query.
+        """
+        contact_masks = _load_contact_masks(self.sim)
+        gate_pair_mask, obstacle_pair_mask = _load_contact_category_masks(self.sim)
+        gate_ids, obstacle_ids = self.mocap_ids
+        _mjx_data = self.sim.mjx_data
+
+        def classify_contacts(data: EnvData) -> tuple[Array, Array, Array]:
+            """Return per-world and per-drone collision classifications."""
+            mocap_pos, mocap_quat = _mjx_data.mocap_pos, _mjx_data.mocap_quat
+            mocap_pos = mocap_pos.at[..., gate_ids, :].set(data.gates_pos)
+            mocap_quat = mocap_quat.at[..., gate_ids, :].set(jp.roll(data.gates_quat, 1, axis=-1))
+            mocap_pos = mocap_pos.at[..., obstacle_ids, :].set(data.obstacles_pos)
+            mjx_data = _mjx_data.replace(mocap_pos=mocap_pos, mocap_quat=mocap_quat)
+            _, mjx_data = sync_sim2mjx(data.sim_data, mjx_data, self.sim.mjx_model)
+            active = mjx_data._impl.contact.dist < 0
+            drone_contacts = active[:, None, :] & contact_masks
+            any_contact = jp.any(drone_contacts, axis=-1)
+            gate_contact = jp.any(drone_contacts & gate_pair_mask[None, None], axis=-1)
+            obstacle_contact = jp.any(drone_contacts & obstacle_pair_mask[None, None], axis=-1)
+            return any_contact, gate_contact, obstacle_contact
+
+        return classify_contacts
 
     def build_render_sync_fn(self) -> Callable[[EnvData, Data], Data]:
         """Build a function that syncs the environment data with the MuJoCo data for rendering."""
@@ -839,6 +920,22 @@ def _load_contact_masks(sim: Sim) -> Array:
     return masks
 
 
+def _load_contact_category_masks(sim: Sim) -> tuple[Array, Array]:
+    """Identify gate and obstacle MuJoCo candidate pairs by attached body name."""
+    sim.contacts()
+    contact = sim.mjx_data._impl.contact
+    geom1, geom2 = np.asarray(contact.geom1[0]), np.asarray(contact.geom2[0])
+    geom_bodies = np.asarray(sim.mj_model.geom_bodyid)
+    body_names = np.asarray(
+        [sim.mj_model.body(int(body_id)).name for body_id in geom_bodies], dtype=object
+    )
+    gate_geom = np.asarray([name.startswith("gate:") for name in body_names])
+    obstacle_geom = np.asarray([name.startswith("obstacle:") for name in body_names])
+    gate_pair = gate_geom[geom1] | gate_geom[geom2]
+    obstacle_pair = obstacle_geom[geom1] | obstacle_geom[geom2]
+    return jp.asarray(gate_pair, dtype=bool), jp.asarray(obstacle_pair, dtype=bool)
+
+
 def _warp_disabled_drones(data: EnvData) -> EnvData:
     """Warp the disabled drones below the ground."""
     pos = jax.numpy.where(data.disabled_drones[..., None], -1, data.sim_data.states.pos)
@@ -857,6 +954,61 @@ def _disabled_drones(pos: Array, contacts: Array, data: EnvData) -> Array:
     contacts = jp.any(contacts[:, :, None] & data.contact_masks, axis=-1)
     disabled = disabled | contacts
     return disabled
+
+
+def _sample_curriculum_difficulty(progress: Array, key: Array, n_envs: int) -> Array:
+    """Sample the frozen Level 3 uncertainty mixture for each reset world."""
+    category_key, value_key = jax.random.split(key)
+    category = jax.random.uniform(category_key, (n_envs,))
+    value = jax.random.uniform(value_key, (n_envs,))
+
+    early = progress < 0.15
+    middle = (progress >= 0.15) & (progress < 0.45)
+    late = (progress >= 0.45) & (progress < 0.75)
+    low_probability = jp.where(early, 0.60, jp.where(middle, 0.25, jp.where(late, 0.10, 0.0)))
+    medium_probability = jp.where(early, 0.20, jp.where(middle, 0.45, jp.where(late, 0.30, 0.0)))
+    low_min = jp.where(early, 0.0, jp.where(middle, 0.0, 0.3))
+    low_max = jp.where(early, 0.3, jp.where(middle, 0.4, 0.6))
+    medium_min = jp.where(early, 0.3, jp.where(middle, 0.4, 0.6))
+    medium_max = jp.where(early, 0.8, jp.where(middle, 0.9, 1.0))
+    low = low_min + value * (low_max - low_min)
+    medium = medium_min + value * (medium_max - medium_min)
+    return jp.where(
+        category < low_probability,
+        low,
+        jp.where(category < low_probability + medium_probability, medium, 1.0),
+    ).astype(jp.float32)
+
+
+def _blend_quaternion(nominal: Array, randomized: Array, difficulty: Array) -> Array:
+    """Normalized shortest-path interpolation suitable for the small configured rotations."""
+    aligned = jp.where(
+        jp.sum(nominal * randomized, axis=-1, keepdims=True) < 0, -randomized, randomized
+    )
+    blended = nominal + difficulty * (aligned - nominal)
+    return blended / jp.maximum(jp.linalg.norm(blended, axis=-1, keepdims=True), 1e-8)
+
+
+def _scale_sim_uncertainty(
+    randomized: SimData, nominal: SimData, difficulty: Array, mask: Array | None
+) -> SimData:
+    """Scale initial-state and dynamics-parameter randomization per world."""
+    state_scale = difficulty[:, None, None]
+    pos = nominal.states.pos + state_scale * (randomized.states.pos - nominal.states.pos)
+    quat = _blend_quaternion(nominal.states.quat, randomized.states.quat, state_scale)
+    mass = nominal.params.mass + state_scale * (randomized.params.mass - nominal.params.mass)
+    inertia_scale = difficulty[:, None, None, None]
+    inertia = nominal.params.J + inertia_scale * (randomized.params.J - nominal.params.J)
+    if mask is not None:
+        state_mask = mask[:, None, None]
+        inertia_mask = mask[:, None, None, None]
+        pos = jp.where(state_mask, pos, randomized.states.pos)
+        quat = jp.where(state_mask, quat, randomized.states.quat)
+        mass = jp.where(state_mask, mass, randomized.params.mass)
+        inertia = jp.where(inertia_mask, inertia, randomized.params.J)
+    states = randomized.states.replace(pos=pos, quat=quat)
+    params = randomized.params.replace(mass=mass, J=inertia, J_inv=jp.linalg.inv(inertia))
+    return randomized.replace(states=states, params=params)
 
 
 # region Factories
@@ -956,7 +1108,11 @@ def build_dynamics_disturbance_fn(
     def dynamics_disturbance(data: SimData) -> SimData:
         key, subkey = jax.random.split(data.core.rng_key)
         states = data.states
-        states = states.replace(force=fn(subkey, states.force.shape))  # World frame
+        difficulty = data.plugins.get(
+            "curriculum_difficulty", jp.ones(data.core.n_worlds, dtype=jp.float32)
+        )
+        force = fn(subkey, states.force.shape) * difficulty[:, None, None]
+        states = states.replace(force=force)  # World frame
         return data.replace(states=states, core=data.core.replace(rng_key=key))
 
     return dynamics_disturbance

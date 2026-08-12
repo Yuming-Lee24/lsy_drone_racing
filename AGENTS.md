@@ -1,4 +1,4 @@
-# Agent Guide: Level 2 End-to-End JAX PPO
+# Agent Guide: Level 2 baseline and Level 3 structured JAX PPO
 
 ## Scope and current objective
 
@@ -9,10 +9,12 @@ The active development branch is `rl-jax-dev`. It is based on `065a6ec` and cont
 PPO implementation added in `3ba81b9`, full-budget training support added in `ae8d2a2`, and the
 Level 2 controller configuration added in `6bd683c`.
 
-The next research objective is to improve deterministic Level 2 success from the current 66.2% to
-at least 90%, primarily through a versioned observation/reward redesign and more stable PPO
-updates. Do not start another long training run until the redesign, tests, diagnostics, and a short
-performance/training pilot have passed.
+The active research objective is now a reliability-first structured V2 policy for the original,
+fully randomized Level 3 environment. The frozen design and current measured status are in
+`lsy_drone_racing/rl_training/LEVEL3_V2.md`; treat that document as authoritative for V2 feature,
+reward, curriculum, network, and evaluation semantics. The 50M reward4 pilot demonstrated stable
+gate completion but no full four-gate success; do not start the 500M run without explicit user
+authorization. The existing Level 2 V1 baseline remains supported and must not regress.
 
 ## User constraints
 
@@ -73,6 +75,11 @@ dependencies change.
 - `lsy_drone_racing/rl_training/benchmark.py`: JAX throughput measurement and 2x speed gate.
 - `lsy_drone_racing/rl_training/torch_reference.py`: isolated local PyTorch reference only.
 - `lsy_drone_racing/control/attitude_jax_ppo.py`: deterministic deployment/simulation controller.
+- `lsy_drone_racing/rl_training/level3_*.py`: versioned Level 3 V2 config, structured
+  observations/network, asymmetric PPO, reward, fused environment, checkpoint, evaluation,
+  benchmark, and training lifecycle.
+- `lsy_drone_racing/control/attitude_jax_ppo_level3.py`: V2 Actor-only deterministic controller.
+- `lsy_drone_racing/rl_training/LEVEL3_V2.md`: exact V2 implementation contract and current gates.
 - `config/level2.toml`: currently selects the JAX controller, `fast/latest`, and attitude mode.
 - `tests/unit/rl_training/test_jax_ppo.py`: mathematical and serialization tests.
 - `tests/integration/rl_training/test_jax_ppo_environment.py`: CPU and 1024-world GPU smoke tests.
@@ -204,7 +211,45 @@ Performance reports under `saves/jax_ppo/performance/` record the 10M-step A/B o
 Do not commit anything in `saves/`; it is intentionally ignored. Do not delete these artifacts
 without explicit permission because they are the only local trained policies and reports.
 
-## Observation/reward V2 research direction
+## Level 3 V2 implemented design and current gate
+
+Level 3 V2 is implemented behind separate modules/profile/checkpoints; it does not alter V1 policy
+files or the configured Level 2 controller. Key invariants:
+
+- Actor input is deployment-safe structured belief: 28 ego values, four 16-value history frames,
+  four 23-value gate tokens, four 15-value obstacle tokens, and a 31-value direct geometry skip.
+- Actor and critic parameters are independent. The critic re-encodes Actor belief and adds actual
+  geometry plus eight dynamics/disturbance/difficulty values.
+- Shared per-entity encoders feed parameter-free four-head ego-query attention pooling. The direct
+  geometry path is never compressed by pooling.
+- Reward uses directed route potential x30, safe-only gate speed x0.3, gate +10, finish +100,
+  gate/obstacle/boundary risk coefficients 0.15/0.10/0.05, collision `-90 - 30*n_passed`, and
+  timeout `-60 - 30*n_passed`. Reliability phase has no time or action-delta reward.
+- Curriculum samples per world but always uses a fixed 500M clock; a short run's stop budget must
+  not compress it. Track layout randomization remains fully enabled at every difficulty.
+- PPO uses 1024x128, eight minibatches, four epochs, LR `5e-5 -> 1e-5`, target KL 0.01, and EMA
+  0.99. Raw and EMA validation/checkpoint selection are separate. Full training never early-stops.
+- Final evaluation is deterministic, original full Level 3, 5,000 independently seeded episodes.
+
+The final 10M same-architecture benchmark measured 84,114.36 PyTorch SPS and 184,234.72 JAX SPS
+(2.19029x); JAX rollout was 449,674.70 SPS and the performance gate passed. Reports are ignored in
+`saves/jax_ppo/performance/level3_v2_final_{torch,jax}_10m.json`.
+
+`Linger=yes` is enabled with user authorization. A real transient service was stopped by SIGTERM
+at 6,291,456 steps, saved `latest` after the current PPO update, and restored exactly at update 48.
+All later 50M pilots ran as detached user services and exited successfully.
+
+The selected reward4 50M pilot is `saves/jax_ppo/level3_v2_reward4_pilot50m/latest`. Its final
+fixed 500-scenario validation had 0 full successes; raw/EMA collision was 59.4%/57.6%, raw/EMA
+passed gate one in 333/360 scenarios, and 29/25 reached gate three. This passes the required
+gate-completion/learning-direction pilot gate, but is not evidence of a successful Level 3 policy.
+The recommended full run is policy-only initialization from its EMA, with optimizer/environment/
+PRNG/curriculum reset. Do not launch 500M without explicit user authorization.
+
+## Historical Level 2 V2 research notes
+
+The following list predates the selected Level 3 design. Do not implement it over the authoritative
+Level 3 contract, but retain it as context for the earlier Level 2 analysis.
 
 Treat the following as the recommended starting hypothesis, not as already-proven design:
 
@@ -328,6 +373,20 @@ pixi run -e jax-rl-gpu benchmark-jax-ppo \
   --output saves/jax_ppo/performance/jax_10m.json
 ```
 
+Level 3 V2 training, evaluation, and same-architecture A/B:
+
+```bash
+pixi run -e jax-rl-gpu train-level3-jax-ppo --profile level3_v2
+pixi run -e jax-rl-gpu eval-level3-jax-ppo \
+  --checkpoint saves/jax_ppo/level3_v2/best_ema --episodes 5000 --seed 30000
+pixi run -e rl-benchmark-gpu benchmark-level3-torch-ppo \
+  --timesteps 10000000 --output saves/jax_ppo/performance/level3_v2_final_torch_10m.json
+pixi run -e jax-rl-gpu benchmark-level3-jax-ppo \
+  --timesteps 10000000 \
+  --pytorch-report saves/jax_ppo/performance/level3_v2_final_torch_10m.json \
+  --output saves/jax_ppo/performance/level3_v2_final_jax_10m.json
+```
+
 Compilation time must be reported separately from steady throughput. If a V2 change fails the 2x
 same-environment PyTorch gate, diagnose synchronization, recompilation, launch count, layout, and
 memory pressure before beginning a long run.
@@ -341,27 +400,29 @@ process owned by the Codex terminal. A representative launch is:
 
 ```bash
 systemd-run --user \
-  --unit=lsy-jax-ppo-v2 \
-  --description='LSY Level 2 JAX PPO V2 training' \
+  --unit=lsy-jax-ppo-level3-v2 \
+  --description='LSY Level 3 structured JAX PPO V2 training' \
   --property=WorkingDirectory=/media/ymlee/yuming_data/repos/lsy_drone_racing \
   --collect \
-  /home/ymlee/.pixi/bin/pixi run -e jax-rl-gpu train-jax-ppo \
-  --profile v2_fast --disable-early-stopping
+  /home/ymlee/.pixi/bin/pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v2 \
+  --initialize-policy saves/jax_ppo/level3_v2_reward4_pilot50m/latest \
+  --initialize-policy-ema
 ```
 
-The V2 profile name above is a placeholder until that profile is implemented. Before reporting the
-job as detached, verify all of the following:
+Before reporting the job as detached, verify all of the following:
 
 ```bash
-systemctl --user status lsy-jax-ppo-v2
-journalctl --user -u lsy-jax-ppo-v2 -n 100 --no-pager
+systemctl --user status lsy-jax-ppo-level3-v2
+journalctl --user -u lsy-jax-ppo-level3-v2 -n 100 --no-pager
 nvidia-smi
 ```
 
-Use `journalctl --user -u lsy-jax-ppo-v2 -f` to follow logs and
-`systemctl --user stop lsy-jax-ppo-v2` for a graceful stop. Confirm that SIGTERM/interrupt handling
-writes an exact `latest` checkpoint before relying on the stop command; the current training CLI
-only explicitly catches `KeyboardInterrupt`, so this must be tested or fixed for a systemd run.
+Use `journalctl --user -u lsy-jax-ppo-level3-v2 -f` to follow logs and
+`systemctl --user stop lsy-jax-ppo-level3-v2` for a graceful stop. The Level 3 CLI catches SIGINT
+and SIGTERM, requests shutdown after the current PPO update, and saves `latest` in `finally`, but a
+real transient-service stop/save/resume test passed on 2026-08-12 at 6,291,456 steps. Exact restore
+continued from update 48. Keep this behavior covered when changing the lifecycle.
 
 ## Required tests for V2 changes
 

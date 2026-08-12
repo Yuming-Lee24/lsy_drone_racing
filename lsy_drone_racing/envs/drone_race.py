@@ -36,6 +36,7 @@ class DroneRaceEnv(RaceCoreEnv, Env):
         seed: int | None = None,
         max_episode_steps: int = 1500,
         device: Literal["cpu", "gpu"] = "cpu",
+        curriculum: bool = False,
     ):
         """Initialize the single-agent drone racing environment.
 
@@ -50,6 +51,7 @@ class DroneRaceEnv(RaceCoreEnv, Env):
             seed: None / -1 for a generated seed or the random seed directly.
             max_episode_steps: Maximum number of steps per episode.
             device: Device used for the environment and the simulation.
+            curriculum: Whether to use per-world mixed uncertainty during resets.
         """
         super().__init__(
             n_envs=1,
@@ -64,6 +66,7 @@ class DroneRaceEnv(RaceCoreEnv, Env):
             seed=seed,
             max_episode_steps=max_episode_steps,
             device=device,
+            curriculum=curriculum,
         )
         self.action_space = build_action_space(control_mode, sim_config.drone)
         n_gates, n_obstacles = len(track.gates), len(track.obstacles)
@@ -122,6 +125,7 @@ class VecDroneRaceEnv(RaceCoreEnv, VectorEnv):
         seed: int = 1337,
         max_episode_steps: int = 1500,
         device: Literal["cpu", "gpu"] = "cpu",
+        curriculum: bool = False,
     ):
         """Initialize the vectorized single-agent drone racing environment.
 
@@ -137,6 +141,7 @@ class VecDroneRaceEnv(RaceCoreEnv, VectorEnv):
             seed: Random seed.
             max_episode_steps: Maximum number of steps per episode.
             device: Device used for the environment and the simulation.
+            curriculum: Whether to use per-world mixed uncertainty during resets.
         """
         super().__init__(
             n_envs=num_envs,
@@ -151,6 +156,7 @@ class VecDroneRaceEnv(RaceCoreEnv, VectorEnv):
             seed=seed,
             max_episode_steps=max_episode_steps,
             device=device,
+            curriculum=curriculum,
         )
         self.num_envs = num_envs
         self.single_action_space = build_action_space(control_mode, sim_config.drone)
