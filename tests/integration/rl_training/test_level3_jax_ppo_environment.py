@@ -96,7 +96,7 @@ def test_level3_cpu_rollout_mask_reset_and_full_update():
 def test_level3_gpu_1024_world_rollout_and_full_update():
     if not any(device.platform == "gpu" for device in jax.devices()):
         pytest.skip("JAX GPU backend is unavailable")
-    runner, rollout, metrics, state, _ = run_level3_smoke("gpu", 1024, profile="level3_v3_reward")
+    runner, rollout, metrics, state, _ = run_level3_smoke("gpu", 1024, profile="level3_v3_pregate")
 
     assert rollout.actor_observation.ego.shape == (2, 1024, EGO_DIM)
     assert metrics.done.shape == (2, 1024)
@@ -222,11 +222,15 @@ def test_level3_segment_reverse_gate_full_start_and_evaluation_reset():
     )
     env = create_level3_environment(forced)
     reset_data, _ = env._reset(env.data, seed=7)
-    positive, positive_start = apply_level3_segment_reset(reset_data, forced, mixed_segment=True)
+    positive, positive_start, positive_mask = apply_level3_segment_reset(
+        reset_data, forced, mixed_segment=True
+    )
     reverse_source = reset_data.replace(
         gate_sequence_direction=reset_data.gate_sequence_direction.at[0].set(-1)
     )
-    reverse, reverse_start = apply_level3_segment_reset(reverse_source, forced, mixed_segment=True)
+    reverse, reverse_start, reverse_mask = apply_level3_segment_reset(
+        reverse_source, forced, mixed_segment=True
+    )
     gate_id = int(reset_data.gate_sequence[0])
     rotation = quaternion_to_matrix(reset_data.gates_quat[:, gate_id])
     physical_normal = rotation[..., :, 0]
@@ -236,6 +240,8 @@ def test_level3_segment_reverse_gate_full_start_and_evaluation_reset():
     assert bool(jnp.all(jnp.sum(reverse_delta * physical_normal, axis=-1) < 0.0))
     np.testing.assert_array_equal(positive_start, 1)
     np.testing.assert_array_equal(reverse_start, 1)
+    np.testing.assert_array_equal(positive_mask, True)
+    np.testing.assert_array_equal(reverse_mask, True)
 
     normal_reset, _ = env._reset(
         env.data.replace(curriculum_progress=jnp.asarray(0.0, dtype=jnp.float32)), seed=99
@@ -267,6 +273,79 @@ def test_level3_segment_reverse_gate_full_start_and_evaluation_reset():
     )
     assert bool(jnp.all(metrics.done[0]))
     np.testing.assert_array_equal(evaluated_runner.episode_start_progress, 0)
+    env.close()
+
+
+@pytest.mark.integration
+def test_level3_pregate_starts_on_entrance_side_and_handles_reverse_gate():
+    config = get_level3_profile("level3_v3_pregate").with_overrides(
+        device="cpu",
+        num_envs=64,
+        num_steps=2,
+        num_minibatches=1,
+        update_epochs=1,
+        total_timesteps=128,
+    )
+    env = create_level3_environment(config)
+    reset_data, _ = env._reset(env.data, seed=707)
+    pregate, start, transformed = apply_level3_segment_reset(reset_data, config, mixed_segment=True)
+    assert bool(jnp.all(transformed))
+
+    world = jnp.arange(config.num_envs)
+    gate_ids = reset_data.gate_sequence[start]
+    center = reset_data.gates_pos[world, gate_ids]
+    rotation = quaternion_to_matrix(reset_data.gates_quat[world, gate_ids])
+    direction = reset_data.gate_sequence_direction[start].astype(jnp.float32)
+    directed_normal = rotation[..., :, 0] * direction[:, None]
+    delta = pregate.sim_data.states.pos[:, 0] - center
+    velocity = pregate.sim_data.states.vel[:, 0]
+    signed_distance = jnp.sum(delta * directed_normal, axis=-1)
+    forward_speed = jnp.sum(velocity * directed_normal, axis=-1)
+    assert bool(jnp.all(signed_distance < -0.24))
+    assert bool(jnp.all(signed_distance >= -config.segment_reset.entrance_distance_max - 1e-5))
+    assert bool(jnp.all(forward_speed > 0.0))
+
+    passed_order = np.arange(4)[None, :] < np.asarray(start)[:, None]
+    passed_physical = np.zeros((config.num_envs, 4), dtype=bool)
+    passed_physical[world[:, None], np.asarray(reset_data.gate_sequence)[None, :]] = passed_order
+    gate_sensor = np.linalg.norm(
+        np.asarray(pregate.sim_data.states.pos[:, 0, None, :2] - pregate.gates_pos[..., :2]),
+        axis=-1,
+    ) < float(pregate.sensor_range[0])
+    np.testing.assert_array_equal(
+        np.asarray(pregate.gates_visited[:, 0]), passed_physical | gate_sensor
+    )
+
+    forced = config.with_overrides(
+        segment_reset=replace(config.segment_reset, start_probabilities=(1.0, 0.0, 0.0, 0.0))
+    )
+    reverse_source = reset_data.replace(
+        gate_sequence_direction=reset_data.gate_sequence_direction.at[0].set(-1)
+    )
+    reverse, reverse_start, reverse_transformed = apply_level3_segment_reset(
+        reverse_source, forced, mixed_segment=True
+    )
+    first_gate_id = int(reset_data.gate_sequence[0])
+    first_rotation = quaternion_to_matrix(reset_data.gates_quat[:, first_gate_id])
+    physical_normal = first_rotation[..., :, 0]
+    reverse_delta = reverse.sim_data.states.pos[:, 0] - reset_data.gates_pos[:, first_gate_id]
+    reverse_velocity = reverse.sim_data.states.vel[:, 0]
+    assert bool(jnp.all(jnp.sum(reverse_delta * physical_normal, axis=-1) > 0.0))
+    assert bool(jnp.all(jnp.sum(reverse_velocity * physical_normal, axis=-1) < 0.0))
+    np.testing.assert_array_equal(reverse_start, 0)
+    np.testing.assert_array_equal(reverse_transformed, True)
+
+    runner = initialize_level3_runner(env, config, seed=707)
+    start_zero = np.asarray(runner.episode_start_progress) == 0
+    assert start_zero.any()
+    np.testing.assert_allclose(
+        runner.observation_memory.nominal_gates_pos[start_zero],
+        runner.environment_data.nominal_gates_pos[start_zero],
+    )
+    np.testing.assert_allclose(
+        runner.observation_memory.nominal_obstacles_pos[start_zero],
+        runner.environment_data.nominal_obstacles_pos[start_zero],
+    )
     env.close()
 
 

@@ -381,6 +381,7 @@ def test_curriculum_schedule_has_expected_mixture_means():
 @pytest.mark.unit
 def test_segment_start_sampling_and_frozen_profile_defaults():
     config = get_level3_profile("level3_v2_segment")
+    pregate = get_level3_profile("level3_v3_pregate")
     samples = sample_segment_start_progress(
         jax.random.key(123), config.segment_reset.start_probabilities, 100_000
     )
@@ -389,6 +390,10 @@ def test_segment_start_sampling_and_frozen_profile_defaults():
     np.testing.assert_allclose(frequencies, 0.25, atol=0.01)
     assert config.segment_reset.enabled
     assert config.profile == "level3_v2_segment"
+    assert config.segment_reset.start_mode == "post_gate"
+    assert pregate.profile == "level3_v3_pregate"
+    assert pregate.segment_reset.start_mode == "pre_gate"
+    assert pregate.reward.route_progress == 12.0
     assert config.total_timesteps == 500_000_000
     assert config.curriculum_timesteps == 500_000_000
     assert config.num_updates == 3814

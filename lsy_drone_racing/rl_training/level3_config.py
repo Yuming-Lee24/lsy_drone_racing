@@ -67,6 +67,7 @@ class SegmentResetConfig:
     """Static mixed-start distribution used only by Level 3 training collectors."""
 
     enabled: bool = False
+    start_mode: str = "post_gate"
     start_probabilities: tuple[float, float, float, float] = (0.25, 0.25, 0.25, 0.25)
     exit_distance_min: float = 0.25
     exit_distance_max: float = 0.35
@@ -80,6 +81,14 @@ class SegmentResetConfig:
     yaw_perturbation: float = 0.20
     roll_pitch_perturbation: float = 0.10
     angular_velocity: float = 0.50
+    entrance_distance_min: float = 0.45
+    entrance_distance_max: float = 0.65
+    fallback_entrance_distances: tuple[float, float] = (0.35, 0.25)
+    entrance_lateral_offset: float = 0.03
+    entrance_vertical_offset: float = 0.03
+    entrance_speed_min: float = 0.20
+    entrance_speed_max: float = 0.45
+    entrance_velocity_perturbation: float = 0.04
     route_speed_estimate: float = 0.75
     elapsed_base_seconds: float = 1.0
     elapsed_scale_min: float = 0.8
@@ -174,6 +183,8 @@ class Level3PPOConfig:
         if abs(sum(probabilities) - 1.0) > 1e-6:
             raise ValueError("segment start_probabilities must sum to one")
         if self.segment_reset.enabled:
+            if self.segment_reset.start_mode not in {"post_gate", "pre_gate"}:
+                raise ValueError("segment start_mode must be 'post_gate' or 'pre_gate'")
             if self.max_episode_steps <= self.segment_reset.minimum_remaining_steps:
                 raise ValueError("segment reset requires more than minimum_remaining_steps")
             if not 0.0 < self.segment_reset.route_speed_estimate:
@@ -191,7 +202,7 @@ class Level3PPOConfig:
         return config
 
 
-LEVEL3_PROFILE_NAMES = ("level3_v2", "level3_v2_segment", "level3_v3_reward")
+LEVEL3_PROFILE_NAMES = ("level3_v2", "level3_v2_segment", "level3_v3_reward", "level3_v3_pregate")
 
 
 def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
@@ -207,6 +218,12 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             profile="level3_v3_reward",
             reward=Level3V3RewardCoefficients(),
             segment_reset=SegmentResetConfig(enabled=True),
+        )
+    elif name == "level3_v3_pregate":
+        config = Level3PPOConfig(
+            profile="level3_v3_pregate",
+            reward=Level3V3RewardCoefficients(),
+            segment_reset=SegmentResetConfig(enabled=True, start_mode="pre_gate"),
         )
     else:
         raise ValueError(f"Unknown Level 3 profile; expected one of {LEVEL3_PROFILE_NAMES}")

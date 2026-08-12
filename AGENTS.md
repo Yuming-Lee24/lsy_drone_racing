@@ -272,12 +272,22 @@ The 50M segment pilot failed: original-start and all segment pass rates ended at
 evaluation found 98.2% current-gate visibility but zero passes, 0.014 m mean minimum gate-plane
 distance, and 0.709 m near-plane lateral error. The root cause is reward geometry, not insufficient
 sensor visibility: V2 allowed progress near the plane outside the opening and disabled gate risk
-when crossing prediction became invalid. `level3_v3_reward` is the active next pilot. It preserves
+when crossing prediction became invalid. `level3_v3_reward` preserves
 Obs/network/PPO/reset/evaluation, reduces route progress to 12, raises gate reward to 30, gates
 route phase transitions on current aperture alignment, and adds current-clearance near-plane/stall
-penalties. Its 10M performance benchmark passed at 181,357.14 SPS and 2.15608x. Run only the first
-77 updates (10,092,544 steps) from random parameters, then review gate-pass diagnostics before any
-continuation or pre-gate curriculum.
+penalties. Its 10M performance benchmark passed at 181,357.14 SPS and 2.15608x. The 77-update
+pilot completed 10,092,544 steps stably at about 185k SPS, but target-gate pass rates peaked at only
+about 0-1.5% and full-start raw/EMA evaluation remained 0/500. Reward V3 removed the known reward
+exploit but did not teach the crossing primitive from post-gate starts.
+
+`level3_v3_pregate` is the next diagnostic profile. It keeps Reward V3 and samples the target gate
+uniformly, but initializes every training episode 0.45-0.65 m on the directed entrance side with
+small 0.03 m lateral/vertical offsets and 0.20-0.45 m/s gate-directed velocity. It is deliberately
+a micro-curriculum for determining whether PPO can learn the crossing primitive, not a production
+training distribution. Evaluation remains full-start. Run only a 77-update 10M pilot from random
+parameters before designing a mixed full/post/pre-gate curriculum. Its RTX 4070 benchmark passed
+at 182,103.90 end-to-end SPS, 2.16496x the same-environment PyTorch baseline, with 9,511 MiB peak
+GPU memory.
 
 ## Historical Level 2 V2 research notes
 

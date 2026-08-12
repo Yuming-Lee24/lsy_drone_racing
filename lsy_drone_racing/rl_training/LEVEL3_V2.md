@@ -231,6 +231,15 @@ It changes only reward geometry: route progress is reduced to 12, gate reward is
 route phase transitions are gated by current opening alignment, and current-clearance near-plane/
 stall penalties remain active even without a valid predicted crossing. It starts from random
 parameters. The V3 10M performance check passed at 181,357.14 end-to-end SPS and 2.15608x the
-PyTorch reference; rollout was 441,354.55 SPS and peak GPU memory was 9,513 MiB. Its first pilot is
-77 updates (10,092,544 steps of the unchanged 500M schedule). Do not continue or add pre-gate
-starts until its gate-pass diagnostics are reviewed.
+PyTorch reference; rollout was 441,354.55 SPS and peak GPU memory was 9,513 MiB. Its 77-update
+pilot completed 10,092,544 steps stably at about 185k SPS, but per-start target-gate pass rates
+peaked at only roughly 0-1.5%; final full-start raw/EMA evaluations were both 0/500.
+
+The next bounded A/B is `level3_v3_pregate`: training resets are uniformly assigned to target
+gates 1-4 and placed 0.45-0.65 m on the directed entrance side, within +/-0.03 m lateral/vertical
+error, with 0.20-0.45 m/s gate-directed velocity. Reverse gates use the mirrored directed frame.
+This is a diagnostic crossing micro-curriculum only; formal evaluation continues to force original
+starts. Run 77 updates from random parameters and do not extend the experiment unless local
+target-gate pass rates materially exceed Reward V3. Its RTX 4070 benchmark passed at 182,103.90
+end-to-end SPS and 2.16496x the 84,114.36 SPS same-environment PyTorch reference; peak GPU memory
+was 9,511 MiB.

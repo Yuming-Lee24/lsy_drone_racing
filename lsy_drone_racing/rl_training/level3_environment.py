@@ -193,7 +193,7 @@ def initialize_level3_runner(
     )
     data, _ = env._reset(initial_data, seed=seed)
     original_reset_belief = belief_observation(data)
-    data, episode_start_progress = apply_level3_segment_reset(
+    data, episode_start_progress, transformed_start = apply_level3_segment_reset(
         data, config, mixed_segment=mixed_segment
     )
     belief = belief_observation(data)
@@ -204,17 +204,17 @@ def initialize_level3_runner(
     memory = initialize_level3_memory(
         belief,
         nominal_gates_pos=jnp.where(
-            (episode_start_progress > 0)[:, None, None],
+            transformed_start[:, None, None],
             data.nominal_gates_pos,
             original_reset_belief["gates_pos"],
         ),
         nominal_gates_quat=jnp.where(
-            (episode_start_progress > 0)[:, None, None],
+            transformed_start[:, None, None],
             data.nominal_gates_quat,
             original_reset_belief["gates_quat"],
         ),
         nominal_obstacles_pos=jnp.where(
-            (episode_start_progress > 0)[:, None, None],
+            transformed_start[:, None, None],
             data.nominal_obstacles_pos,
             original_reset_belief["obstacles_pos"],
         ),
@@ -277,10 +277,10 @@ def _build_level3_environment_step(
             current_data, reset_mask, current_start, current_memory = value
             reset_data, _ = reset_environment(current_data, seed=None, mask=reset_mask)
             original_reset_belief = belief_observation(reset_data)
-            reset_data, reset_start = apply_level3_segment_reset(
+            reset_data, reset_start, transformed_start = apply_level3_segment_reset(
                 reset_data, config, reset_mask, mixed_segment=mixed_segment
             )
-            segment_mask = (reset_start > 0)[:, None, None]
+            segment_mask = transformed_start[:, None, None]
             reset_nominal_gates_pos = jnp.where(
                 segment_mask, reset_data.nominal_gates_pos, original_reset_belief["gates_pos"]
             )
