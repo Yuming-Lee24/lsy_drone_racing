@@ -318,6 +318,15 @@ The RTX 4070 benchmark passed at 180,928.00 end-to-end SPS and 2.15098x the same
 PyTorch baseline, with 9,511 MiB peak memory. Start with a 382-update 50M pilot; do not launch the
 remaining 450M until full-start and multi-segment diagnostics are reviewed.
 
+The mixed 50M pilot completed 50,069,504 steps stably at 188,939.33 final SPS. At the final
+rollout, pre-gate target passes remained 79.80% and directly seeded gate-4 completion was 65.63%,
+but full-start and post-gate target passes were both zero. Full-start raw/EMA evaluation remained
+0/500 with zero gates passed and 99.0%/99.4% truncation. Do not continue this checkpoint to 500M:
+the policy retains the crossing primitive but cannot turn from a previous-gate exit or acquire the
+first gate from the race start. The next bounded experiment should sample a continuous approach
+corridor from the original/previous-gate exit to the next-gate entrance, including increasing
+heading and lateral errors, rather than adding more endpoint-only full/post/pre training.
+
 ## Historical Level 2 V2 research notes
 
 The following list predates the selected Level 3 design. Do not implement it over the authoritative

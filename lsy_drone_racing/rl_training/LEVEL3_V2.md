@@ -276,3 +276,11 @@ By 40% progress, pre-gate states expand from 0.12-0.18 m, +/-0.015 m, and 0.60-0
 Start kind is tracked independently from gate progress, and evaluation always forces full-start.
 Its RTX 4070 benchmark passed at 180,928.00 SPS, 2.15098x the 84,114.36 SPS PyTorch baseline,
 with 9,511 MiB peak memory. The first gate is a 382-update 50M pilot, not a full-budget launch.
+
+That pilot completed 50,069,504 steps stably at 188,939.33 final SPS. Pre-gate target passes ended
+at 79.80%, while full-start and post-gate target passes both ended at zero. Formal raw/EMA
+full-start validation was 0/500 with zero gates passed and 99.0%/99.4% truncation. The experiment
+therefore preserves crossing but fails to bridge endpoint states into navigation. Do not exact-
+resume it to 500M. The next curriculum should sample continuously along the approach route from
+the original/previous-gate exit to the next-gate entrance and gradually add heading/lateral error,
+so the policy learns the missing turn-and-acquire behavior rather than seeing only route endpoints.
