@@ -6,6 +6,8 @@ logs
 secrets
 **/*.secret
 saves
+# Local JAX PPO weights, exact-resume state, metrics, and performance reports.
+saves/jax_ppo/
 .pytest_cache
 **/*.json
 !devcontainer.json

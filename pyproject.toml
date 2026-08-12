@@ -44,6 +44,10 @@ deploy = [
 ]
 # option[rl]: train rl policy
 rl = ["torch == 2.8.0", "wandb"]
+# option[jax-rl]: fused JAX/Flax/Optax training without a Torch dependency
+jax-rl = ["flax >= 0.12", "optax >= 0.2.6"]
+# option[jax-rl-gpu]: CUDA variant used by the production PPO tasks
+jax-rl-gpu = ["jax[cuda12]", "flax >= 0.12", "optax >= 0.2.6"]
 # option[gamepad]: use a gamepad as input for your drone
 gamepad = ["pygame"]
 
@@ -82,12 +86,18 @@ scripts = ["tools/setup_acados.sh"]
 
 [tool.pixi.tasks]
 evaluate = { cmd = "python scripts/evaluate.py", description = "Evaluate the controller" }
+train-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.training", description = "Train the fused JAX PPO racing policy" }
+eval-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.evaluation", description = "Evaluate a JAX PPO checkpoint deterministically" }
+benchmark-jax-ppo = { cmd = "python -m lsy_drone_racing.rl_training.benchmark", description = "Benchmark fused JAX PPO and enforce the speedup gate" }
+benchmark-torch-ppo = { cmd = "python -m lsy_drone_racing.rl_training.torch_reference", description = "Benchmark the adapted 25ws PyTorch PPO reference" }
 
 ### environments
 [tool.pixi.environments]
 default = { features = ["sim"], solve-group = "default" }
 deploy = { features = ["sim", "gpu", "kilted", "deploy"] }
 gpu = { features = ["sim", "gpu"], solve-group = "default" }
+jax-rl-gpu = { features = ["sim", "jax-rl-gpu"], solve-group = "default" }
+rl-benchmark-gpu = { features = ["sim", "jax-rl-gpu", "rl"], solve-group = "default" }
 tests = { features = ["sim", "rl", "tests"], solve-group = "default" }
 gpu-tests = { features = ["sim", "gpu", "tests"], solve-group = "default" }
 gamepad = { features = ["sim", "gamepad"], solve-group = "default" }
