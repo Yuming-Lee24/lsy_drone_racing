@@ -97,6 +97,18 @@ class SegmentResetConfig:
     minimum_remaining_steps: int = 400
     gate_plane_half_thickness: float = 0.02
     gate_outer_buffer: float = 0.10
+    mixed_progress_knots: tuple[float, float, float] = (0.10, 0.40, 0.80)
+    mixed_start_probabilities_0: tuple[float, float, float] = (0.10, 0.20, 0.70)
+    mixed_start_probabilities_1: tuple[float, float, float] = (0.20, 0.25, 0.55)
+    mixed_start_probabilities_2: tuple[float, float, float] = (0.45, 0.30, 0.25)
+    mixed_start_probabilities_3: tuple[float, float, float] = (0.70, 0.15, 0.15)
+    mixed_geometry_progress_end: float = 0.40
+    mixed_entrance_distance_min: float = 0.60
+    mixed_entrance_distance_max: float = 1.00
+    mixed_entrance_offset: float = 0.12
+    mixed_entrance_speed_min: float = 0.15
+    mixed_entrance_speed_max: float = 0.50
+    mixed_entrance_velocity_perturbation: float = 0.08
 
 
 @dataclass(frozen=True)
@@ -140,6 +152,7 @@ class Level3PPOConfig:
     geometry: SafetyGeometry = SafetyGeometry()
     reward: Level3RewardCoefficients = Level3RewardCoefficients()
     segment_reset: SegmentResetConfig = SegmentResetConfig()
+    allow_policy_initialization: bool = False
 
     @property
     def batch_size(self) -> int:
@@ -183,8 +196,10 @@ class Level3PPOConfig:
         if abs(sum(probabilities) - 1.0) > 1e-6:
             raise ValueError("segment start_probabilities must sum to one")
         if self.segment_reset.enabled:
-            if self.segment_reset.start_mode not in {"post_gate", "pre_gate"}:
-                raise ValueError("segment start_mode must be 'post_gate' or 'pre_gate'")
+            if self.segment_reset.start_mode not in {"post_gate", "pre_gate", "mixed_curriculum"}:
+                raise ValueError(
+                    "segment start_mode must be 'post_gate', 'pre_gate', or 'mixed_curriculum'"
+                )
             if self.max_episode_steps <= self.segment_reset.minimum_remaining_steps:
                 raise ValueError("segment reset requires more than minimum_remaining_steps")
             if not 0.0 < self.segment_reset.route_speed_estimate:
@@ -193,6 +208,24 @@ class Level3PPOConfig:
                 raise ValueError("segment environment_frequency must be positive")
             if not 0.0 <= self.segment_reset.direction_blend_max <= 1.0:
                 raise ValueError("segment direction_blend_max must be in [0, 1]")
+            knots = self.segment_reset.mixed_progress_knots
+            if not 0.0 < knots[0] < knots[1] < knots[2] <= 1.0:
+                raise ValueError("mixed_progress_knots must be strictly increasing in (0, 1]")
+            probability_rows = (
+                self.segment_reset.mixed_start_probabilities_0,
+                self.segment_reset.mixed_start_probabilities_1,
+                self.segment_reset.mixed_start_probabilities_2,
+                self.segment_reset.mixed_start_probabilities_3,
+            )
+            for row in probability_rows:
+                if len(row) != 3 or any(value < 0.0 for value in row):
+                    raise ValueError(
+                        "mixed start probabilities must have three non-negative values"
+                    )
+                if abs(sum(row) - 1.0) > 1e-6:
+                    raise ValueError("mixed start probabilities must sum to one")
+            if not 0.0 < self.segment_reset.mixed_geometry_progress_end <= 1.0:
+                raise ValueError("mixed_geometry_progress_end must be in (0, 1]")
 
     def with_overrides(self, **overrides: Any) -> Level3PPOConfig:
         """Return a validated configuration copy."""
@@ -208,6 +241,7 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v3_reward",
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
+    "level3_v3_mixed_curriculum",
 )
 
 
@@ -247,6 +281,24 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
                 entrance_speed_max=0.90,
                 entrance_velocity_perturbation=0.02,
             ),
+        )
+    elif name == "level3_v3_mixed_curriculum":
+        config = Level3PPOConfig(
+            profile="level3_v3_mixed_curriculum",
+            reward=Level3V3RewardCoefficients(),
+            segment_reset=SegmentResetConfig(
+                enabled=True,
+                start_mode="mixed_curriculum",
+                entrance_distance_min=0.12,
+                entrance_distance_max=0.18,
+                fallback_entrance_distances=(0.14, 0.12),
+                entrance_lateral_offset=0.015,
+                entrance_vertical_offset=0.015,
+                entrance_speed_min=0.60,
+                entrance_speed_max=0.90,
+                entrance_velocity_perturbation=0.02,
+            ),
+            allow_policy_initialization=True,
         )
     else:
         raise ValueError(f"Unknown Level 3 profile; expected one of {LEVEL3_PROFILE_NAMES}")

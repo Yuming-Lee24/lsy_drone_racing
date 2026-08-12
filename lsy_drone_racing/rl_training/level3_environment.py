@@ -36,7 +36,12 @@ from lsy_drone_racing.rl_training.level3_rewards import (
     reward_route_potential,
 )
 from lsy_drone_racing.rl_training.level3_runtime import belief_observation, true_observation
-from lsy_drone_racing.rl_training.level3_segment_reset import apply_level3_segment_reset
+from lsy_drone_racing.rl_training.level3_segment_reset import (
+    FULL_START,
+    POST_GATE_START,
+    PRE_GATE_START,
+    apply_level3_segment_reset,
+)
 from lsy_drone_racing.rl_training.networks import (
     deterministic_action,
     sample_action,
@@ -66,6 +71,7 @@ class Level3RunnerState:
     actor_observation: ActorObservation
     critic_observation: CriticObservation
     episode_start_progress: Array
+    episode_start_kind: Array
     rng: Array
 
 
@@ -83,6 +89,7 @@ class Level3RolloutMetrics:
     boundary_collision: Array
     failed_gate: Array
     episode_start_progress: Array
+    episode_start_kind: Array
     final_progress: Array
     target_gate_passed: Array
     difficulty: Array
@@ -193,9 +200,10 @@ def initialize_level3_runner(
     )
     data, _ = env._reset(initial_data, seed=seed)
     original_reset_belief = belief_observation(data)
-    data, episode_start_progress, transformed_start = apply_level3_segment_reset(
+    data, episode_start_progress, episode_start_kind = apply_level3_segment_reset(
         data, config, mixed_segment=mixed_segment
     )
+    transformed_start = episode_start_kind != FULL_START
     belief = belief_observation(data)
     actual = true_observation(data)
     # Reset observations are the only nominal-map source guaranteed to exist in deployment. If an
@@ -230,6 +238,7 @@ def initialize_level3_runner(
         actor_observation=actor,
         critic_observation=critic,
         episode_start_progress=episode_start_progress,
+        episode_start_kind=episode_start_kind,
         rng=jax.random.key(seed),
     )
 
@@ -271,16 +280,20 @@ def _build_level3_environment_step(
         )
 
     def reset_done(
-        data: EnvData, done: Array, episode_start_progress: Array, memory: Level3ObservationMemory
-    ) -> tuple[EnvData, Array, Array, Array, Array]:
-        def perform_reset(value: tuple) -> tuple[EnvData, Array, Array, Array, Array]:
-            current_data, reset_mask, current_start, current_memory = value
+        data: EnvData,
+        done: Array,
+        episode_start_progress: Array,
+        episode_start_kind: Array,
+        memory: Level3ObservationMemory,
+    ) -> tuple[EnvData, Array, Array, Array, Array, Array]:
+        def perform_reset(value: tuple) -> tuple[EnvData, Array, Array, Array, Array, Array]:
+            current_data, reset_mask, current_start, current_kind, current_memory = value
             reset_data, _ = reset_environment(current_data, seed=None, mask=reset_mask)
             original_reset_belief = belief_observation(reset_data)
-            reset_data, reset_start, transformed_start = apply_level3_segment_reset(
+            reset_data, reset_start, reset_kind = apply_level3_segment_reset(
                 reset_data, config, reset_mask, mixed_segment=mixed_segment
             )
-            segment_mask = transformed_start[:, None, None]
+            segment_mask = (reset_kind != FULL_START)[:, None, None]
             reset_nominal_gates_pos = jnp.where(
                 segment_mask, reset_data.nominal_gates_pos, original_reset_belief["gates_pos"]
             )
@@ -295,6 +308,7 @@ def _build_level3_environment_step(
             return (
                 reset_data,
                 jnp.where(reset_mask, reset_start, current_start),
+                jnp.where(reset_mask, reset_kind, current_kind),
                 jnp.where(
                     reset_mask[:, None, None],
                     reset_nominal_gates_pos,
@@ -318,11 +332,12 @@ def _build_level3_environment_step(
             lambda value: (
                 value[0],
                 value[2],
-                value[3].nominal_gates_pos,
-                value[3].nominal_gates_quat,
-                value[3].nominal_obstacles_pos,
+                value[3],
+                value[4].nominal_gates_pos,
+                value[4].nominal_gates_quat,
+                value[4].nominal_obstacles_pos,
             ),
-            (data, done, episode_start_progress, memory),
+            (data, done, episode_start_progress, episode_start_kind, memory),
         )
 
     def transition(carry: Level3RunnerState, action: Array) -> Level3EnvironmentTransition:
@@ -341,10 +356,17 @@ def _build_level3_environment_step(
         (
             next_data,
             next_episode_start_progress,
+            next_episode_start_kind,
             reset_nominal_gates_pos,
             reset_nominal_gates_quat,
             reset_nominal_obstacles_pos,
-        ) = reset_done(terminal_data, done, carry.episode_start_progress, carry.observation_memory)
+        ) = reset_done(
+            terminal_data,
+            done,
+            carry.episode_start_progress,
+            carry.episode_start_kind,
+            carry.observation_memory,
+        )
         next_belief = belief_observation(next_data)
         next_actual = true_observation(next_data)
         next_memory, terminal_memory = advance_level3_memory(
@@ -407,6 +429,7 @@ def _build_level3_environment_step(
                 actor_observation=next_actor,
                 critic_observation=next_critic,
                 episode_start_progress=next_episode_start_progress,
+                episode_start_kind=next_episode_start_kind,
                 rng=carry.rng,
             ),
             terminal_actor_observation=terminal_actor,
@@ -439,6 +462,7 @@ def _build_level3_environment_step(
                 episode_start_progress=jnp.where(
                     reward_transition.done, carry.episode_start_progress, -1
                 ),
+                episode_start_kind=jnp.where(reward_transition.done, carry.episode_start_kind, -1),
                 final_progress=jnp.where(
                     reward_transition.done,
                     terminal_actual["n_gates_passed"],
@@ -616,6 +640,34 @@ def summarize_level3_rollout(metrics: Level3RolloutMetrics) -> dict[str, Array]:
                 ),
                 f"segment/start_{start}_final_progress": (
                     jnp.sum(jnp.where(start_mask, metrics.final_progress, 0)) / start_denominator
+                ),
+            }
+        )
+    for kind, name in (
+        (FULL_START, "full"),
+        (POST_GATE_START, "post_gate"),
+        (PRE_GATE_START, "pre_gate"),
+    ):
+        kind_mask = metrics.done & (metrics.episode_start_kind == kind)
+        kind_count = jnp.sum(kind_mask)
+        kind_denominator = jnp.maximum(kind_count, 1)
+        summary.update(
+            {
+                f"start_kind/{name}_episodes": kind_count,
+                f"start_kind/{name}_target_gate_pass_rate": (
+                    jnp.sum(metrics.target_gate_passed & kind_mask) / kind_denominator
+                ),
+                f"start_kind/{name}_remaining_track_success_rate": (
+                    jnp.sum(metrics.success & kind_mask) / kind_denominator
+                ),
+                f"start_kind/{name}_collision_rate": (
+                    jnp.sum(metrics.collision & kind_mask) / kind_denominator
+                ),
+                f"start_kind/{name}_timeout_rate": (
+                    jnp.sum(metrics.timeout & kind_mask) / kind_denominator
+                ),
+                f"start_kind/{name}_final_progress": (
+                    jnp.sum(jnp.where(kind_mask, metrics.final_progress, 0)) / kind_denominator
                 ),
             }
         )

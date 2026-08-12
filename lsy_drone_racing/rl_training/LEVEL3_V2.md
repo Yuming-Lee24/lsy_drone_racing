@@ -117,7 +117,8 @@ Validation always uses `d=1` and the original Level 3 environment, independent o
 `level3_v2_segment` is a reset-distribution experiment. It deliberately reuses the exact V2
 observation, reward, Actor/Critic, PPO update, collision termination, curriculum, random Level 3
 track generator, and success definition. It must start with random parameters; policy-only
-initialization is rejected. Exact resume is supported only from its own format-3 checkpoint.
+initialization is rejected. Its historical format-3 checkpoint remains policy-only compatible;
+current exact resume uses format 4 after start-kind telemetry was added.
 
 After the ordinary reset has generated the complete track, uncertainty, dynamics, and clean
 controller state, each training world independently samples one of four start-progress values with
@@ -143,10 +144,10 @@ total gates passed, fewer collisions, then mean return.
 - target KL 0.01 stops remaining epochs at epoch boundaries.
 - gradient norm 0.5; parameter EMA 0.99. Validation records raw and EMA independently and stores
   separate `best_raw` and `best_ema` checkpoints.
-- Checkpoints are V2/version-checked. Format 3 exact resume includes raw/EMA parameters,
-  optimizer, PRNG, environment, curriculum progress, start progress, belief anchors, and history.
-  Existing format-2 V2 checkpoints remain policy-only compatible but are explicitly rejected for
-  exact resume; V1 policies are rejected.
+- Checkpoints are V2/version-checked. Format 4 exact resume includes raw/EMA parameters,
+  optimizer, PRNG, environment, curriculum progress, start progress/kind, belief anchors, and
+  history. Existing format-2/3 V2 checkpoints remain policy-only compatible but are explicitly
+  rejected for exact resume; V1 policies are rejected.
 - SIGINT and SIGTERM request a save after the current PPO update.
 
 Commands:
@@ -176,6 +177,12 @@ pixi run -e jax-rl-gpu eval-level3-jax-ppo \
   --profile level3_v2_segment \
   --checkpoint saves/jax_ppo/level3_v2_segment/best_ema \
   --episodes 5000 --seed 30000
+
+# Mixed full/post/pre 50M pilot initialized from the learned crossing primitive.
+pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  --profile level3_v3_mixed_curriculum \
+  --initialize-policy saves/jax_ppo/level3_v3_crossing_seed/latest \
+  --max-updates 382 --skip-final-evaluation
 ```
 
 Long jobs must use a named `systemd --user` transient service and require `Linger=yes`. Record the
@@ -260,3 +267,12 @@ briefly reached 3.33% and ended at zero, while the directly seeded gate-4 comple
 the crossing primitive but not approach or multi-segment racing. Do not extend the injected-only
 profile to 500M; use its checkpoint only as a policy initialization candidate for a separately
 versioned mixed and progressively widened reset curriculum.
+
+`level3_v3_mixed_curriculum` policy-initializes from the raw crossing-seed checkpoint and resets
+optimizer, EMA, PRNG, environment, and the 500M clock. Full/post/pre probabilities are
+10/20/70% at progress 0, 20/25/55% at 10%, 45/30/25% at 40%, and 70/15/15% from 80% onward.
+By 40% progress, pre-gate states expand from 0.12-0.18 m, +/-0.015 m, and 0.60-0.90 m/s to
+0.60-1.00 m, +/-0.12 m, and 0.15-0.50 m/s. Post-gate states retain their validated geometry.
+Start kind is tracked independently from gate progress, and evaluation always forces full-start.
+Its RTX 4070 benchmark passed at 180,928.00 SPS, 2.15098x the 84,114.36 SPS PyTorch baseline,
+with 9,511 MiB peak memory. The first gate is a 382-update 50M pilot, not a full-budget launch.

@@ -52,7 +52,11 @@ from lsy_drone_racing.rl_training.level3_rewards import (
     initialize_level3_reward_state,
     level3_reward,
 )
-from lsy_drone_racing.rl_training.level3_segment_reset import sample_segment_start_progress
+from lsy_drone_racing.rl_training.level3_segment_reset import (
+    mixed_start_probabilities,
+    sample_mixed_start_kind,
+    sample_segment_start_progress,
+)
 from lsy_drone_racing.rl_training.level3_training import (
     _existing_validation_ranks,
     level3_validation_rank,
@@ -406,6 +410,28 @@ def test_segment_start_sampling_and_frozen_profile_defaults():
 
 
 @pytest.mark.unit
+def test_mixed_start_curriculum_probabilities_and_sampling():
+    config = get_level3_profile("level3_v3_mixed_curriculum")
+    expected = (
+        (0.0, (0.10, 0.20, 0.70)),
+        (0.10, (0.20, 0.25, 0.55)),
+        (0.40, (0.45, 0.30, 0.25)),
+        (0.80, (0.70, 0.15, 0.15)),
+        (1.00, (0.70, 0.15, 0.15)),
+    )
+    for progress, probabilities in expected:
+        np.testing.assert_allclose(
+            mixed_start_probabilities(jnp.asarray(progress), config), probabilities, atol=1e-6
+        )
+
+    samples = sample_mixed_start_kind(jax.random.key(321), jnp.asarray(0.0), config, 100_000)
+    frequencies = np.bincount(np.asarray(samples), minlength=3) / samples.size
+    np.testing.assert_allclose(frequencies, (0.10, 0.20, 0.70), atol=0.01)
+    assert config.segment_reset.start_mode == "mixed_curriculum"
+    assert config.allow_policy_initialization
+
+
+@pytest.mark.unit
 def test_level3_validation_rank_is_lexicographic():
     base = {
         "successes": 400,
@@ -588,6 +614,13 @@ def test_level3_checkpoint_exactly_restores_optimizer_ema_and_typed_key(tmp_path
     metadata_path = tmp_path / METADATA_FILE
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["format_version"] = 2
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    policy = load_level3_policy(tmp_path, state.params)
+    np.testing.assert_array_equal(jax.tree.leaves(policy)[0], jax.tree.leaves(state.params)[0])
+    with pytest.raises(ValueError, match="policy-only compatible"):
+        restore_level3_checkpoint(tmp_path, state, runner, config)
+
+    metadata["format_version"] = 3
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     policy = load_level3_policy(tmp_path, state.params)
     np.testing.assert_array_equal(jax.tree.leaves(policy)[0], jax.tree.leaves(state.params)[0])

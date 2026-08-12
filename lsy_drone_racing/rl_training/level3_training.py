@@ -179,7 +179,11 @@ def train_level3(config: Level3PPOConfig, args: argparse.Namespace) -> None:
         raise ValueError("--resume and --initialize-policy are mutually exclusive")
     if args.initialize_policy_ema and args.initialize_policy is None:
         raise ValueError("--initialize-policy-ema requires --initialize-policy")
-    if config.segment_reset.enabled and args.initialize_policy is not None:
+    if (
+        config.segment_reset.enabled
+        and not config.allow_policy_initialization
+        and args.initialize_policy is not None
+    ):
         raise ValueError(
             f"{config.profile} must start from random parameters or exact-resume itself"
         )

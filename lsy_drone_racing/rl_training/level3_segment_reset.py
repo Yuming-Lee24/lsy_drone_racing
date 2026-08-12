@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     from lsy_drone_racing.envs.race_core import EnvData
     from lsy_drone_racing.rl_training.level3_config import Level3PPOConfig
 
+FULL_START = 0
+POST_GATE_START = 1
+PRE_GATE_START = 2
+
 
 def _normalize(value: Array) -> Array:
     return value / jnp.maximum(jnp.linalg.norm(value, axis=-1, keepdims=True), 1e-6)
@@ -43,6 +47,42 @@ def sample_segment_start_progress(
     """Sample full/segment start IDs ``0..3`` from the frozen profile probabilities."""
     logits = jnp.log(jnp.asarray(probabilities, dtype=jnp.float32))
     return jax.random.categorical(key, logits, shape=(count,)).astype(jnp.int32)
+
+
+def mixed_start_probabilities(progress: Array, config: Level3PPOConfig) -> Array:
+    """Interpolate ``[full, post-gate, pre-gate]`` probabilities on the fixed 500M clock."""
+    segment = config.segment_reset
+    knots = segment.mixed_progress_knots
+    rows = jnp.asarray(
+        (
+            segment.mixed_start_probabilities_0,
+            segment.mixed_start_probabilities_1,
+            segment.mixed_start_probabilities_2,
+            segment.mixed_start_probabilities_3,
+        ),
+        dtype=jnp.float32,
+    )
+
+    def interpolate(left: Array, right: Array, start: float, end: float) -> Array:
+        fraction = jnp.clip((progress - start) / (end - start), 0.0, 1.0)
+        return left + fraction * (right - left)
+
+    stage_0 = interpolate(rows[0], rows[1], 0.0, knots[0])
+    stage_1 = interpolate(rows[1], rows[2], knots[0], knots[1])
+    stage_2 = interpolate(rows[2], rows[3], knots[1], knots[2])
+    return jnp.where(
+        progress < knots[0],
+        stage_0,
+        jnp.where(progress < knots[1], stage_1, jnp.where(progress < knots[2], stage_2, rows[3])),
+    )
+
+
+def sample_mixed_start_kind(
+    key: Array, progress: Array, config: Level3PPOConfig, count: int
+) -> Array:
+    """Sample full/post/pre start kinds from the on-device curriculum distribution."""
+    probabilities = mixed_start_probabilities(progress, config)
+    return jax.random.categorical(key, jnp.log(probabilities), shape=(count,)).astype(jnp.int32)
 
 
 def _ordered_track(data: EnvData) -> tuple[Array, Array, Array]:
@@ -98,94 +138,143 @@ def apply_level3_segment_reset(
     non-zero post-gate start progress. The diagnostic ``pre_gate`` mode instead transforms every
     world to the entrance side of its sampled target gate. If all three candidates are unsafe,
     that world safely falls back to the original start and reports start progress zero. The third
-    return value explicitly identifies transformed worlds because a pre-gate gate-1 start has
-    legitimate progress zero.
+    return value is the start kind (0 full, 1 post-gate, 2 pre-gate), which also identifies
+    transformed worlds when a pre-gate gate-1 start has legitimate progress zero.
     """
     count = data.sim_data.core.n_worlds
     reset_mask = jnp.ones((count,), dtype=bool) if mask is None else mask
     if not mixed_segment or not config.segment_reset.enabled:
-        return data, jnp.zeros((count,), dtype=jnp.int32), jnp.zeros((count,), dtype=bool)
+        zeros = jnp.zeros((count,), dtype=jnp.int32)
+        return data, zeros, zeros
 
     segment = config.segment_reset
-    keys = jax.random.split(data.sim_data.core.rng_key, 12)
+    keys = jax.random.split(data.sim_data.core.rng_key, 14)
     next_key = keys[0]
-    sampled_start = sample_segment_start_progress(keys[1], segment.start_probabilities, count)
-    if segment.start_mode == "pre_gate":
-        distance_min = segment.entrance_distance_min
-        distance_max = segment.entrance_distance_max
-        position_lateral_limit = segment.entrance_lateral_offset
-        position_vertical_limit = segment.entrance_vertical_offset
-        speed_min = segment.entrance_speed_min
-        speed_max = segment.entrance_speed_max
-        velocity_perturbation = segment.entrance_velocity_perturbation
+    pre_distance_min = segment.entrance_distance_min
+    pre_distance_max = segment.entrance_distance_max
+    pre_lateral_limit = segment.entrance_lateral_offset
+    pre_vertical_limit = segment.entrance_vertical_offset
+    pre_speed_min = segment.entrance_speed_min
+    pre_speed_max = segment.entrance_speed_max
+    pre_velocity_perturbation = segment.entrance_velocity_perturbation
+    if segment.start_mode == "mixed_curriculum":
+        sampled_kind = sample_mixed_start_kind(keys[1], data.curriculum_progress, config, count)
+        pre_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
+        post_start = 1 + jax.random.categorical(
+            keys[3], jnp.zeros((3,), dtype=jnp.float32), shape=(count,)
+        ).astype(jnp.int32)
+        sampled_start = jnp.where(
+            sampled_kind == PRE_GATE_START,
+            pre_start,
+            jnp.where(sampled_kind == POST_GATE_START, post_start, 0),
+        )
+        geometry_fraction = jnp.clip(
+            data.curriculum_progress / segment.mixed_geometry_progress_end, 0.0, 1.0
+        )
+
+        def mix(initial: float, final: float) -> Array:
+            return initial + geometry_fraction * (final - initial)
+
+        pre_distance_min = mix(segment.entrance_distance_min, segment.mixed_entrance_distance_min)
+        pre_distance_max = mix(segment.entrance_distance_max, segment.mixed_entrance_distance_max)
+        pre_lateral_limit = mix(segment.entrance_lateral_offset, segment.mixed_entrance_offset)
+        pre_vertical_limit = mix(segment.entrance_vertical_offset, segment.mixed_entrance_offset)
+        pre_speed_min = mix(segment.entrance_speed_min, segment.mixed_entrance_speed_min)
+        pre_speed_max = mix(segment.entrance_speed_max, segment.mixed_entrance_speed_max)
+        pre_velocity_perturbation = mix(
+            segment.entrance_velocity_perturbation, segment.mixed_entrance_velocity_perturbation
+        )
+    elif segment.start_mode == "pre_gate":
+        sampled_kind = jnp.full((count,), PRE_GATE_START, dtype=jnp.int32)
+        sampled_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
     else:
-        distance_min = segment.exit_distance_min
-        distance_max = segment.exit_distance_max
-        position_lateral_limit = segment.lateral_offset
-        position_vertical_limit = segment.vertical_offset
-        speed_min = segment.speed_min
-        speed_max = segment.speed_max
-        velocity_perturbation = segment.velocity_perturbation
-    reset_distance = jax.random.uniform(keys[2], (count,), minval=distance_min, maxval=distance_max)
+        sampled_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
+        sampled_kind = jnp.where(sampled_start > 0, POST_GATE_START, FULL_START).astype(jnp.int32)
+    pre_gate = sampled_kind == PRE_GATE_START
+    distance_min = jnp.where(pre_gate, pre_distance_min, segment.exit_distance_min)
+    distance_max = jnp.where(pre_gate, pre_distance_max, segment.exit_distance_max)
+    position_lateral_limit = jnp.where(pre_gate, pre_lateral_limit, segment.lateral_offset)
+    position_vertical_limit = jnp.where(pre_gate, pre_vertical_limit, segment.vertical_offset)
+    speed_min = jnp.where(pre_gate, pre_speed_min, segment.speed_min)
+    speed_max = jnp.where(pre_gate, pre_speed_max, segment.speed_max)
+    velocity_perturbation = jnp.where(
+        pre_gate, pre_velocity_perturbation, segment.velocity_perturbation
+    )
+    reset_distance = jax.random.uniform(keys[4], (count,), minval=distance_min, maxval=distance_max)
     lateral = jax.random.uniform(
-        keys[3], (count,), minval=-position_lateral_limit, maxval=position_lateral_limit
+        keys[5], (count,), minval=-position_lateral_limit, maxval=position_lateral_limit
     )
     vertical = jax.random.uniform(
-        keys[4], (count,), minval=-position_vertical_limit, maxval=position_vertical_limit
+        keys[6], (count,), minval=-position_vertical_limit, maxval=position_vertical_limit
     )
-    speed = jax.random.uniform(keys[5], (count,), minval=speed_min, maxval=speed_max)
-    beta = jax.random.uniform(keys[6], (count,), maxval=segment.direction_blend_max)
+    speed = jax.random.uniform(keys[7], (count,), minval=speed_min, maxval=speed_max)
+    beta = jax.random.uniform(keys[8], (count,), maxval=segment.direction_blend_max)
     velocity_lateral = jax.random.uniform(
-        keys[7], (count,), minval=-velocity_perturbation, maxval=velocity_perturbation
+        keys[9], (count,), minval=-velocity_perturbation, maxval=velocity_perturbation
     )
     velocity_vertical = jax.random.uniform(
-        keys[8], (count,), minval=-velocity_perturbation, maxval=velocity_perturbation
+        keys[10], (count,), minval=-velocity_perturbation, maxval=velocity_perturbation
     )
-    attitude_noise = jax.random.uniform(keys[9], (count, 3), minval=-1.0, maxval=1.0)
+    attitude_noise = jax.random.uniform(keys[11], (count, 3), minval=-1.0, maxval=1.0)
     angular_velocity = jax.random.uniform(
-        keys[10], (count, 3), minval=-segment.angular_velocity, maxval=segment.angular_velocity
+        keys[12], (count, 3), minval=-segment.angular_velocity, maxval=segment.angular_velocity
     )
     elapsed_scale = jax.random.uniform(
-        keys[11], (count,), minval=segment.elapsed_scale_min, maxval=segment.elapsed_scale_max
+        keys[13], (count,), minval=segment.elapsed_scale_min, maxval=segment.elapsed_scale_max
     )
 
     ordered_pos, ordered_quat, ordered_direction = _ordered_track(data)
     sequence_length = ordered_pos.shape[1]
     world = jnp.arange(count)
-    if segment.start_mode == "pre_gate":
-        target_index = jnp.clip(sampled_start, 0, sequence_length - 1)
-        frame_index = target_index
-        frame_center = ordered_pos[world, frame_index]
-        frame_rotation = quaternion_to_matrix(ordered_quat[world, frame_index])
-        frame_direction = ordered_direction[world, frame_index]
-        normal = frame_rotation[..., :, 0] * frame_direction[:, None]
-        horizontal = frame_rotation[..., :, 1] * frame_direction[:, None]
-        vertical_axis = frame_rotation[..., :, 2]
-        random_candidate = (
-            frame_center
-            - reset_distance[:, None] * normal
-            + lateral[:, None] * horizontal
-            + vertical[:, None] * vertical_axis
-        )
-        fallback_1 = frame_center - segment.fallback_entrance_distances[0] * normal
-        fallback_2 = frame_center - segment.fallback_entrance_distances[1] * normal
+    pre_target_index = jnp.clip(sampled_start, 0, sequence_length - 1)
+    post_target_index = jnp.clip(sampled_start, 1, sequence_length - 1)
+    pre_frame_index = pre_target_index
+    post_frame_index = post_target_index - 1
+
+    pre_center = ordered_pos[world, pre_frame_index]
+    pre_rotation = quaternion_to_matrix(ordered_quat[world, pre_frame_index])
+    pre_direction = ordered_direction[world, pre_frame_index]
+    pre_normal = pre_rotation[..., :, 0] * pre_direction[:, None]
+    pre_horizontal = pre_rotation[..., :, 1] * pre_direction[:, None]
+    pre_vertical = pre_rotation[..., :, 2]
+    pre_candidate = (
+        pre_center
+        - reset_distance[:, None] * pre_normal
+        + lateral[:, None] * pre_horizontal
+        + vertical[:, None] * pre_vertical
+    )
+    if segment.start_mode == "mixed_curriculum":
+        fallback_pre_distance_1 = jnp.maximum(0.14, 0.75 * distance_min)
+        fallback_pre_distance_2 = jnp.maximum(0.12, 0.50 * distance_min)
     else:
-        target_index = jnp.clip(sampled_start, 1, sequence_length - 1)
-        frame_index = target_index - 1
-        frame_center = ordered_pos[world, frame_index]
-        frame_rotation = quaternion_to_matrix(ordered_quat[world, frame_index])
-        frame_direction = ordered_direction[world, frame_index]
-        normal = frame_rotation[..., :, 0] * frame_direction[:, None]
-        horizontal = frame_rotation[..., :, 1] * frame_direction[:, None]
-        vertical_axis = frame_rotation[..., :, 2]
-        random_candidate = (
-            frame_center
-            + reset_distance[:, None] * normal
-            + lateral[:, None] * horizontal
-            + vertical[:, None] * vertical_axis
-        )
-        fallback_1 = frame_center + segment.fallback_exit_distances[0] * normal
-        fallback_2 = frame_center + segment.fallback_exit_distances[1] * normal
+        fallback_pre_distance_1 = segment.fallback_entrance_distances[0]
+        fallback_pre_distance_2 = segment.fallback_entrance_distances[1]
+    pre_fallback_1 = pre_center - jnp.asarray(fallback_pre_distance_1)[..., None] * pre_normal
+    pre_fallback_2 = pre_center - jnp.asarray(fallback_pre_distance_2)[..., None] * pre_normal
+
+    post_center = ordered_pos[world, post_frame_index]
+    post_rotation = quaternion_to_matrix(ordered_quat[world, post_frame_index])
+    post_direction = ordered_direction[world, post_frame_index]
+    post_normal = post_rotation[..., :, 0] * post_direction[:, None]
+    post_horizontal = post_rotation[..., :, 1] * post_direction[:, None]
+    post_vertical = post_rotation[..., :, 2]
+    post_candidate = (
+        post_center
+        + reset_distance[:, None] * post_normal
+        + lateral[:, None] * post_horizontal
+        + vertical[:, None] * post_vertical
+    )
+    post_fallback_1 = post_center + segment.fallback_exit_distances[0] * post_normal
+    post_fallback_2 = post_center + segment.fallback_exit_distances[1] * post_normal
+
+    target_index = jnp.where(pre_gate, pre_target_index, post_target_index)
+    frame_index = jnp.where(pre_gate, pre_frame_index, post_frame_index)
+    normal = jnp.where(pre_gate[:, None], pre_normal, post_normal)
+    horizontal = jnp.where(pre_gate[:, None], pre_horizontal, post_horizontal)
+    vertical_axis = jnp.where(pre_gate[:, None], pre_vertical, post_vertical)
+    random_candidate = jnp.where(pre_gate[:, None], pre_candidate, post_candidate)
+    fallback_1 = jnp.where(pre_gate[:, None], pre_fallback_1, post_fallback_1)
+    fallback_2 = jnp.where(pre_gate[:, None], pre_fallback_2, post_fallback_2)
     safe_random = _candidate_is_safe(data, random_candidate, config)
     safe_fallback_1 = _candidate_is_safe(data, fallback_1, config)
     safe_fallback_2 = _candidate_is_safe(data, fallback_2, config)
@@ -195,18 +284,17 @@ def apply_level3_segment_reset(
         jnp.where(safe_fallback_1[:, None], fallback_1, fallback_2),
     )
     candidate_valid = safe_random | safe_fallback_1 | safe_fallback_2
-    eligible = jnp.ones_like(reset_mask) if segment.start_mode == "pre_gate" else sampled_start > 0
+    eligible = sampled_kind != FULL_START
     segment_mask = reset_mask & eligible & candidate_valid
     effective_start = jnp.where(segment_mask, sampled_start, 0).astype(jnp.int32)
+    effective_kind = jnp.where(segment_mask, sampled_kind, FULL_START).astype(jnp.int32)
 
     target_center = ordered_pos[world, target_index]
     next_direction = _normalize(target_center - candidate)
-    if segment.start_mode == "pre_gate":
-        travel_direction = next_direction
-    else:
-        travel_direction = _normalize(
-            (1.0 - beta[:, None]) * normal + beta[:, None] * next_direction
-        )
+    post_travel_direction = _normalize(
+        (1.0 - beta[:, None]) * normal + beta[:, None] * next_direction
+    )
+    travel_direction = jnp.where(pre_gate[:, None], next_direction, post_travel_direction)
     velocity = (
         speed[:, None] * travel_direction
         + velocity_lateral[:, None] * horizontal
@@ -227,12 +315,11 @@ def apply_level3_segment_reset(
     cumulative_route = jnp.cumsum(
         jnp.concatenate((first_leg[:, None], between_gates), axis=1), axis=1
     )
-    if segment.start_mode == "pre_gate":
-        travelled_distance = jnp.maximum(
-            cumulative_route[world, target_index] - reset_distance, 0.0
-        )
-    else:
-        travelled_distance = cumulative_route[world, frame_index]
+    pre_travelled_distance = jnp.maximum(
+        cumulative_route[world, target_index] - reset_distance, 0.0
+    )
+    post_travelled_distance = cumulative_route[world, frame_index]
+    travelled_distance = jnp.where(pre_gate, pre_travelled_distance, post_travelled_distance)
     elapsed_seconds = (
         segment.elapsed_base_seconds + travelled_distance / segment.route_speed_estimate
     ) * elapsed_scale
@@ -321,5 +408,5 @@ def apply_level3_segment_reset(
             marked_for_reset=jnp.where(segment_mask, False, data.marked_for_reset),
         ),
         effective_start,
-        segment_mask,
+        effective_kind,
     )

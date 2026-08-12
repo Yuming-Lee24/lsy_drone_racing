@@ -255,9 +255,10 @@ the original start or a state just after gate one, two, or three with probabilit
 RaceCore reset still generates the entire random track, uncertainty, dynamics and curriculum; the
 pure-JAX transform then initializes directed exit pose/velocity, elapsed time, visited flags,
 reward potential/history and runner start progress. Training metrics are split by start progress.
-Validation/evaluation always force original full starts. Checkpoint format 3 exactly restores the
-new runner; format-2 V2 policies remain policy-only compatible but cannot exact-resume. Selection
-is lexicographic by successes, total gates passed, fewer collisions, and mean return.
+Validation/evaluation always force original full starts. Those historical format-3 checkpoints
+remain policy-only compatible after start-kind telemetry was added; current format 4 exactly
+restores the runner. Selection is lexicographic by successes, total gates passed, fewer collisions,
+and mean return.
 
 The segment experiment must start from random parameters. Its 382-update pilot is 50,069,504 steps
 of the unchanged 500M LR and curriculum clocks. CPU and 1024-world GPU rollout/update tests pass.
@@ -304,6 +305,18 @@ were 100%, 98.39%, 100%, and 98.55% for starts 0-3. Start-2 remaining-track comp
 0/500 with zero gates passed. Therefore the crossing primitive is now established, but approach,
 exit recovery, and transitions between gates are not. Do not continue this injected-only profile
 to 500M. The next experiment must mix full, post-gate, and progressively widened pre-gate starts.
+
+`level3_v3_mixed_curriculum` is that next experiment and is the only segment profile allowed to
+policy-initialize. It loads the raw crossing-seed policy while resetting optimizer, EMA, PRNG,
+environment and the 500M curriculum clock. Full/post/pre probabilities move through
+10/20/70% at progress 0, 20/25/55% at 10%, 45/30/25% at 40%, and 70/15/15% at 80% and later.
+Pre-gate geometry expands by 40% progress from 0.12-0.18 m, +/-0.015 m and 0.60-0.90 m/s to
+0.60-1.00 m, +/-0.12 m and 0.15-0.50 m/s. Post-gate geometry stays unchanged. Runner/checkpoint
+format 4 records start kind separately from start progress, and rollout metrics report full,
+post-gate and pre-gate outcomes independently. Formal evaluation remains original full-start.
+The RTX 4070 benchmark passed at 180,928.00 end-to-end SPS and 2.15098x the same-environment
+PyTorch baseline, with 9,511 MiB peak memory. Start with a 382-update 50M pilot; do not launch the
+remaining 450M until full-start and multi-segment diagnostics are reviewed.
 
 ## Historical Level 2 V2 research notes
 
@@ -517,7 +530,7 @@ In addition to existing regression tests, add tests for:
 - mixed-start sampling ratio, positive/reverse exit-side geometry, candidate safety, state ranges,
   visited/nominal semantics, elapsed time, and per-start reward/history initialization
 - segment masked reset and diagnostics, full-start equivalence, evaluation full-start enforcement,
-  format-2 policy-only compatibility/format-3 exact resume, and lexicographic checkpoint selection
+  format-2/3 policy-only compatibility/format-4 exact resume, and lexicographic checkpoint selection
 
 ## Git and change discipline
 
