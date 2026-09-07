@@ -81,9 +81,6 @@ On the first invocation, Pixi will automatically resolve and install all require
 
 You may also use  with [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html). We do not recommend this, since Mamba/Conda environments have the tendency to be leaky and share some system-wide packages. In our experience, this will lead to problems, which is why this project is optimized to use with pixi. If you want to use micromamba anyway, we can't guarantee support.
 
-#### Docker (Not recommended)
-
-
 #### Simulation & Hardware on our Lab PC (If Necessary)
 
 We provide a Workstation in the Lab on which you are allowed to run your controllers during deployment. Please create a new user for each team and follow the instructions below.
@@ -254,16 +251,6 @@ After that, reopen your environment. This automatically adds the package to the 
 !!! note
     Changing the `pyproject.toml` will also update the `pixi.lock` file, which pins the exact versions of all packages. Make sure to commit both files to your repository, otherwise the tests on GitHub will fail.
 
-### Windows Subsystem for Linux (WSL2)
-
-It is also possible to develop the project on Windows using WSL2. Clone this project into the WSL2 file system, and follow the same instructions as for Linux.
-
-However, rendering might not work out of the box. To enable software rendering, set the following environment variable in your WSL2 terminal:
-
-```bash
-export LIBGL_ALWAYS_INDIRECT=1
-python scripts/sim.py -r
-
 ### Native Windows 10/11 (x86-64, not recommended)
 
 Supports CPU simulation, MuJoCo visualization, and acados MPC without WSL or Docker.
@@ -306,37 +293,6 @@ Supports CPU simulation, MuJoCo visualization, and acados MPC without WSL or Doc
     pixi install
     ```
 This activates the Pixi environment with all required dependencies installed. You should now be ready to develop with Windows.
-
-### Dev Container (Windows 11 WSL2)
-
-For Windows, you require WSL2 to run the dev container, which enables a Linux environment within Windows. Follow these steps to set up the dev container in VS Code with WSL2:
-
-**Installation and Setup**
-
-1. Follow the [official VS Code Dev Containers installation steps](https://code.visualstudio.com/docs/devcontainers/tutorial) to install VS Code Dev Containers in WSL2 and Docker.
-
-    - Make sure to install Ubuntu 22.04 or above in WSL2.
-    - If you didn't get prompted to enable WSL integration by Docker during installation, open Docker Desktop settings and manually enable WSL integration. **Important:** There are TWO setting options for this. Make sure to enable BOTH!
-
-2. Clone this project into the WSL2 file system (e.g., `/home/~`) rather than the Windows file system. You can access the WSL filesystem by opening a WSL2/Ubuntu terminal. Performance is significantly better when working on the WSL file system compared to the Windows file system.
-
-3. Verify dev container configuration:
-
-    - Check the dev container configuration file `.devcontainer/devcontainer.json`.
-    - Comment out/Uncomment the necessary settings.
-
-4. Open the project in VS Code:
-
-    - Select **File → Open Folder** and navigate to your project directory in WSL.
-    - VS Code should automatically detect the dev container and prompt you to **Reopen in Container**. If not, see the [official instructions](https://code.visualstudio.com/docs/devcontainers/tutorial#_open-the-folder-in-a-container) on how to open it manually.
-    - Make sure to have the **Dev Containers** extension and **Container Tools** extension installed.
-
-5. Once the container has opened, initialize the environment by opening a terminal and running:
-
-    ```bash
-    pixi shell
-    ```
-
 
 ## Common errors
 
