@@ -215,6 +215,51 @@ python scripts/deploy.py --config level2.toml --controller <your_controller.py>
 !!! note
     Be careful when flying the drone! Make sure to kill the process (**Ctrl+C**) immediately when your controller is unstable.
 
+### Native Windows 10/11 (x86-64, not recommended)
+
+Supports CPU simulation, MuJoCo visualization, and acados MPC without WSL or Docker.
+
+**Installation and Setup**
+
+1. Install tools
+
+    Install [Git for Windows](https://git-scm.com/install/windows) and
+    [Pixi](https://pixi.sh/latest/installation/) following their official installation instructions.
+
+    Reopen PowerShell and verify:
+
+    ```powershell
+    git --version
+    pixi --version
+    ```
+
+    Pixi installs Python, CMake, MinGW-w64 GCC/G++, GNU Make, and the Visual C++ runtime
+    automatically into the project environment from the Windows dependencies in
+    `pyproject.toml`.
+
+2. Clone and install
+
+    Clone your forked course repo and install the environment:
+
+    ```powershell
+    git clone https://github.com/learnsyslab/lsy_drone_racing.git
+    cd .\lsy_drone_racing
+    pixi install
+    pixi shell
+    ```
+
+    `pixi install` installs the dependencies. `pixi shell` activates the environment,
+    puts its tools on `PATH`, and runs the acados setup on first use. This can take
+    several minutes. Inside the activated shell, verify:
+
+    ```powershell
+    gcc -dumpmachine          # Expected: x86_64-w64-mingw32
+    g++ --version
+    mingw32-make --version
+    ```
+
+    You should now be ready to develop with Windows.
+
 ### Development
 
 #### Work on Existing Dependencies
@@ -251,49 +296,6 @@ After that, reopen your environment. This automatically adds the package to the 
 !!! note
     Changing the `pyproject.toml` will also update the `pixi.lock` file, which pins the exact versions of all packages. Make sure to commit both files to your repository, otherwise the tests on GitHub will fail.
 
-### Native Windows 10/11 (x86-64, not recommended)
-
-Supports CPU simulation, MuJoCo visualization, and acados MPC without WSL or Docker.
-
-**Installation and Setup**
-
-1. Install tools
-
-    Open PowerShell and check `winget --version`. If unavailable, install **App Installer**
-    from the Microsoft Store ([instructions](https://learn.microsoft.com/en-us/windows/package-manager/winget/#install-winget)). Then run:
-
-    ```powershell
-    winget install --exact --id Git.Git
-    winget install --exact --id prefix-dev.pixi
-    winget install --exact --id Microsoft.VCRedist.2015+.x64
-    ```
-
-    Download a **Win64/x86_64 GCC release ZIP (UCRT, POSIX)** from
-    [WinLibs](https://winlibs.com/#download-release). Extract `mingw64` to
-    `C:\tools\mingw64`, then add `C:\tools\mingw64\bin` to your user **Path** under
-    **Edit environment variables for your account**. Reopen PowerShell and verify:
-
-    ```powershell
-    git --version
-    pixi --version
-    gcc -dumpmachine          # Expected: x86_64-w64-mingw32
-    g++ --version
-    mingw32-make --version
-    ```
-
-    Pixi installs Python and CMake automatically. Visualization requires an OpenGL-capable graphics driver.
-
-2. Clone and install
-
-    Clone your forked course repo and install the environment:
-
-    ```powershell
-    git clone https://github.com/learnsyslab/lsy_drone_racing.git
-    cd .\lsy_drone_racing
-    pixi install
-    ```
-This activates the Pixi environment with all required dependencies installed. You should now be ready to develop with Windows.
-
 ## Common errors
 
 ### LIBUSB_ERROR_ACCESS (deployment only)
@@ -327,6 +329,28 @@ No plugins found, falling back on no decorations
 ```
 
 Note that starting the simulation with `-r` from a terminal inside VSCode might cause this warning. This will cause your window to not have any decorations (close, minimize, maximize buttons). You can safely ignore this warning. If you want to get rid of it, start the simulation from a regular terminal outside of VSCode.
+
+### PowerShell script execution is disabled (Windows only)
+
+If `pixi shell` fails with an error like:
+
+```text
+File ...\Temp\tmp....ps1 cannot be loaded because running scripts is disabled on this system.
+```
+
+PowerShell's `Restricted` execution policy blocks the temporary script that Pixi uses
+to activate the environment. Check the policy and allow local scripts for the current
+session, then retry:
+
+```powershell
+Get-ExecutionPolicy
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned -Force
+pixi shell
+```
+
+This change requires no administrator privileges and applies only to the current
+PowerShell session and its child processes. It expires when they are closed and does
+not permanently change the user or system execution policy.
 
 ## Next Steps
 

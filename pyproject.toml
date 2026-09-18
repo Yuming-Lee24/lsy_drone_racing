@@ -81,6 +81,12 @@ openblas = ">=0.3.30,<0.4"
 
 [tool.pixi.target.win-64.dependencies]
 cmake = "==3.26.0"
+vc14_runtime = "*"
+# MinGW-w64 toolchain for acados; exact package builds are pinned in pixi.lock.
+gcc = ">=15,<16"
+gxx = ">=15,<16"
+binutils = "*"
+make = "==4.4.1"
 
 [tool.pixi.pypi-dependencies]
 lsy_drone_racing = { path = ".", editable = true }
