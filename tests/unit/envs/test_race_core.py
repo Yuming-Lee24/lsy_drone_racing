@@ -28,6 +28,7 @@ def make_env(config_name: str = "level0.toml", **overrides: Any) -> gymnasium.En
         freq=config.env.freq,
         sim_config=config.sim,
         sensor_range=config.env.sensor_range,
+        sensor_use_camera_fov=config.env.get("sensor_use_camera_fov", False),
         control_mode="state",
         track=config.env.track,
         disturbances=config.env.get("disturbances"),
@@ -105,7 +106,7 @@ def test_obs_returns_nominal_when_out_of_sensor_range():
 @pytest.mark.unit
 def test_obs_returns_real_pose_when_in_sensor_range():
     """With a huge sensor range, obs returns the actual mocap pose for each gate."""
-    env = make_env(sensor_range=100.0)
+    env = make_env(sensor_range=100.0, sensor_use_camera_fov=False)
     obs, _ = env.reset()
     assert bool(jp.all(obs["gates_visited"])), "all gates should be visited"
     assert bool(jp.all(obs["obstacles_visited"])), "all obstacles should be visited"

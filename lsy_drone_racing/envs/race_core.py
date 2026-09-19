@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import crazyflow.sim.functional as F
+import glfw
 import jax
 import jax.numpy as jp
 import mujoco
@@ -35,8 +36,9 @@ from crazyflow.drones import load_params as load_hardware_params
 from crazyflow.sim import Sim
 from crazyflow.sim.pipeline import append_fn, insert_fn_before
 from crazyflow.sim.sim import seed_sim, sync_sim2mjx, use_box_collision
+from crazyflow.sim.visualize import draw_line
 from crazyflow.utils import leaf_replace
-from flax.struct import dataclass
+from flax.struct import dataclass, field
 from gymnasium import spaces
 from scipy.spatial.transform import Rotation as R
 
@@ -122,6 +124,12 @@ class EnvData:
     pos_limit_high: Array
     max_episode_steps: Array
     sensor_range: Array
+    sensor_use_camera_fov: bool = field(pytree_node=False, default=False)
+    camera_pos: Array | None = None
+    camera_forward: Array | None = None
+    camera_right: Array | None = None
+    camera_up: Array | None = None
+    camera_tan_half_fov: Array | None = None
 
     @staticmethod
     def create(
@@ -338,6 +346,7 @@ class RaceCoreEnv:
         seed: int | None = None,
         max_episode_steps: int = 1500,
         device: Literal["cpu", "gpu"] = "cpu",
+        sensor_use_camera_fov: bool = False,
     ):
         """Initialize the DroneRacingEnv.
 
@@ -347,6 +356,7 @@ class RaceCoreEnv:
             freq: Environment step frequency.
             sim_config: Configuration dictionary for the simulation.
             sensor_range: Sensor range for gate and obstacle detection.
+            sensor_use_camera_fov: Use the FPV camera's rectangular field of view.
             control_mode: Control mode for the drones. See `build_action_space` for details.
             track: Track configuration.
             disturbances: Disturbance configuration.
@@ -426,6 +436,18 @@ class RaceCoreEnv:
             sim_data=self.sim.data,
             device=self.settings.device,
         )
+        if sensor_use_camera_fov:
+            camera_pos, camera_axes, tan_half_fov = _fpv_camera_mounts(self.sim.mj_model, n_drones)
+            self.data = self.data.replace(
+                sensor_use_camera_fov=True,
+                camera_pos=jax.device_put(jp.asarray(camera_pos), self.settings.device),
+                camera_forward=jax.device_put(
+                    jp.asarray(-camera_axes[..., 2]), self.settings.device
+                ),
+                camera_right=jax.device_put(jp.asarray(camera_axes[..., 0]), self.settings.device),
+                camera_up=jax.device_put(jp.asarray(camera_axes[..., 1]), self.settings.device),
+                camera_tan_half_fov=jax.device_put(jp.asarray(tan_half_fov), self.settings.device),
+            )
 
         # 5) Generate functions
         self._setup_sim(randomizations, drones)
@@ -474,7 +496,34 @@ class RaceCoreEnv:
         """Render the environment."""
         if not self.data.sim_data.core.mjx_synced:
             self.data, self.sim.mjx_data = self._render_sync(self.data, self.sim.mjx_data)
+        if self.data.sensor_use_camera_fov:
+            if self.sim.viewer is None:
+                self.sim.render(camera=self.settings.camera, cam_config=self.settings.cam_config)
+            self._match_fpv_aspect_ratio()
+            for drone in range(self.sim.n_drones):
+                if not self.data.disabled_drones[0, drone]:
+                    for points in _fpv_wireframe(self.data, drone):
+                        draw_line(self.sim, points, rgba=np.array([0.0, 0.8, 1.0, 1.0]))
         self.sim.render(camera=self.settings.camera, cam_config=self.settings.cam_config)
+
+    def _match_fpv_aspect_ratio(self):
+        """Keep FPV image projection consistent with sensing; free views remain resizable."""
+        viewer = self.sim.viewer.viewer
+        window = getattr(viewer, "window", None)
+        if window is None:
+            return
+        camera = viewer.cam.fixedcamid
+        fixed = viewer.cam.type == mujoco.mjtCamera.mjCAMERA_FIXED
+        name = self.sim.mj_model.camera(camera).name if fixed and camera >= 0 else ""
+        if name.startswith("fpv_cam:"):
+            width, height = self.sim.mj_model.cam_resolution[camera]
+            glfw.set_window_aspect_ratio(window, int(width), int(height))
+            window_width, window_height = glfw.get_window_size(window)
+            target_height = round(window_width * height / width)
+            if abs(window_height - target_height) > 1:
+                glfw.set_window_size(window, window_width, target_height)
+        else:
+            glfw.set_window_aspect_ratio(window, glfw.DONT_CARE, glfw.DONT_CARE)
 
     def close(self):
         """Close the environment by stopping the drone and landing back at the starting position."""
@@ -759,13 +808,10 @@ def _reset_env_data(data: EnvData, mask: Array | None = None) -> EnvData:
     disabled_drones = jp.where(mask[..., None], False, data.disabled_drones)
     steps = jp.where(mask, 0, data.steps)
     # Check which gates are in range of the drone
-    dpos = drone_pos[..., None, :2] - data.gates_pos[:, None, :, :2]
-    gates_visited = jp.linalg.norm(dpos, axis=-1) < data.sensor_range
+    gates_visited = _visible_objects(data, data.gates_pos)
     gates_visited = jp.where(mask[..., None, None], gates_visited, data.gates_visited)
     # And which obstacles are in range
-    obstacles_pos = data.obstacles_pos
-    dpos = drone_pos[..., None, :2] - obstacles_pos[:, None, :, :2]
-    obstacles_visited = jp.linalg.norm(dpos, axis=-1) < data.sensor_range
+    obstacles_visited = _visible_objects(data, data.obstacles_pos)
     obstacles_visited = jp.where(mask[..., None, None], obstacles_visited, data.obstacles_visited)
     return data.replace(
         n_gates_passed=n_gates_passed,
@@ -786,12 +832,111 @@ def _update_disabled_drones(data: EnvData, contacts: Array) -> EnvData:
 
 def _update_visited_objects(data: EnvData) -> EnvData:
     """Update which gates and obstacles are or have been in range of the drone."""
-    drone_pos = data.sim_data.states.pos
-    dpos = drone_pos[..., None, :2] - data.gates_pos[:, None, :, :2]
-    gates_visited = data.gates_visited | (jp.linalg.norm(dpos, axis=-1) < data.sensor_range)
-    dpos = drone_pos[..., None, :2] - data.obstacles_pos[:, None, :, :2]
-    obstacles_visited = data.obstacles_visited | (jp.linalg.norm(dpos, axis=-1) < data.sensor_range)
+    gates_visited = data.gates_visited | _visible_objects(data, data.gates_pos)
+    obstacles_visited = data.obstacles_visited | _visible_objects(data, data.obstacles_pos)
     return data.replace(gates_visited=gates_visited, obstacles_visited=obstacles_visited)
+
+
+def _fpv_camera_mounts(
+    model: mujoco.MjModel, n_drones: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read camera mounts relative to each drone's mocap body, including nested fixed bodies."""
+    mj_data = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, mj_data)
+    mujoco.mj_camlight(model, mj_data)
+    positions, axes, tangents = [], [], []
+    for drone in range(n_drones):
+        name = f"fpv_cam:{drone}"
+        camera = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name)
+        if camera < 0:
+            raise ValueError(f"FPV perception requires camera '{name}'.")
+        body = model.cam_bodyid[camera]
+        while body and model.body_mocapid[body] < 0:
+            body = model.body_parentid[body]
+        if not body or model.cam_mode[camera] != mujoco.mjtCamLight.mjCAMLIGHT_FIXED:
+            raise ValueError(f"FPV camera '{name}' must be fixed to a drone mocap body.")
+        rotation = mj_data.xmat[body].reshape(3, 3)
+        positions.append(rotation.T @ (mj_data.cam_xpos[camera] - mj_data.xpos[body]))
+        # MuJoCo camera axes are right, up, backward; drone states use XYZW quaternions.
+        axes.append(rotation.T @ mj_data.cam_xmat[camera].reshape(3, 3))
+        width, height = model.cam_resolution[camera]
+        if width <= 1 or height <= 1 or not 0 < model.cam_fovy[camera] < 180:
+            raise ValueError(
+                f"FPV camera '{name}' requires a valid resolution and perspective FOV."
+            )
+        if model.cam_projection[camera] != mujoco.mjtProjection.mjPROJ_PERSPECTIVE or np.any(
+            model.cam_sensorsize[camera]
+        ):
+            raise ValueError(f"FPV camera '{name}' must use perspective fovy projection.")
+        tan_vertical = np.tan(np.deg2rad(model.cam_fovy[camera] / 2))
+        tangents.append([tan_vertical * width / height, tan_vertical])
+    return np.asarray(positions), np.asarray(axes), np.asarray(tangents)
+
+
+def _rotate_vectors(quat: Array, vectors: Array) -> Array:
+    """Rotate body-frame vectors using unit XYZW quaternions, with batch broadcasting."""
+    cross = 2 * jp.cross(quat[..., :3], vectors)
+    return vectors + quat[..., 3:] * cross + jp.cross(quat[..., :3], cross)
+
+
+def _visible_objects(data: EnvData, positions: Array) -> Array:
+    """Return per-world, per-drone visibility of object reference points."""
+    states = data.sim_data.states
+    if not data.sensor_use_camera_fov:
+        delta = positions[:, None, :, :2] - states.pos[..., None, :2]
+        return jp.linalg.norm(delta, axis=-1) < data.sensor_range
+    origin = states.pos + _rotate_vectors(states.quat, data.camera_pos)
+    forward = _rotate_vectors(states.quat, data.camera_forward)
+    right = _rotate_vectors(states.quat, data.camera_right)
+    up = _rotate_vectors(states.quat, data.camera_up)
+    delta = positions[:, None] - origin[..., None, :]
+    distance = jp.linalg.norm(delta, axis=-1)
+    projection = jp.sum(delta * forward[..., None, :], axis=-1)
+    horizontal = jp.abs(jp.sum(delta * right[..., None, :], axis=-1))
+    vertical = jp.abs(jp.sum(delta * up[..., None, :], axis=-1))
+    # A small inward tolerance keeps float32 rounding from admitting boundary points.
+    limits = data.camera_tan_half_fov * (1 - 4 * jp.finfo(delta.dtype).eps)
+    return (
+        (projection > 0)
+        & (distance < data.sensor_range)
+        & (horizontal < projection * limits[None, :, 0, None])
+        & (vertical < projection * limits[None, :, 1, None])
+    )
+
+
+def _fpv_wireframe(data: EnvData, drone: int) -> list[np.ndarray]:
+    """Build the rectangular frustum clipped by the range sphere, for world zero."""
+    radius = float(data.sensor_range[0])
+    if not data.sensor_use_camera_fov or radius <= 0:
+        return []
+    forward = np.asarray(data.camera_forward[drone])
+    right = np.asarray(data.camera_right[drone])
+    up = np.asarray(data.camera_up[drone])
+    horizontal, vertical = np.asarray(data.camera_tan_half_fov[drone])
+    corners = np.array(
+        [
+            [-horizontal, -vertical],
+            [horizontal, -vertical],
+            [horizontal, vertical],
+            [-horizontal, vertical],
+        ]
+    )
+
+    def on_sphere(uv: np.ndarray) -> np.ndarray:
+        directions = forward + uv[:, :1] * right + uv[:, 1:] * up
+        return radius * directions / np.linalg.norm(directions, axis=-1, keepdims=True)
+
+    lines = [on_sphere(np.linspace(corners[i], corners[(i + 1) % 4], 9)) for i in range(4)]
+    lines.extend(np.stack([np.zeros(3), point]) for point in on_sphere(corners))
+    lines.append(
+        on_sphere(np.column_stack([np.linspace(-horizontal, horizontal, 17), np.zeros(17)]))
+    )
+    lines.append(on_sphere(np.column_stack([np.zeros(17), np.linspace(-vertical, vertical, 17)])))
+    states = data.sim_data.states
+    rotation = R.from_quat(np.asarray(states.quat[0, drone]))
+    mount = np.asarray(data.camera_pos[drone])
+    position = np.asarray(states.pos[0, drone])
+    return [rotation.apply(points + mount) + position for points in lines]
 
 
 def _update_target_gates(data: EnvData) -> EnvData:

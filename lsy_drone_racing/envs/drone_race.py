@@ -36,6 +36,7 @@ class DroneRaceEnv(RaceCoreEnv, Env):
         seed: int | None = None,
         max_episode_steps: int = 1500,
         device: Literal["cpu", "gpu"] = "cpu",
+        sensor_use_camera_fov: bool = False,
     ):
         """Initialize the single-agent drone racing environment.
 
@@ -44,6 +45,7 @@ class DroneRaceEnv(RaceCoreEnv, Env):
             sim_config: Simulation configuration.
             track: Track configuration.
             sensor_range: Sensor range.
+            sensor_use_camera_fov: Use the FPV camera's rectangular field of view.
             control_mode: Control mode for the drones. See `build_action_space` for details.
             disturbances: Disturbance configuration.
             randomizations: Randomization configuration.
@@ -58,6 +60,7 @@ class DroneRaceEnv(RaceCoreEnv, Env):
             sim_config=sim_config,
             track=track,
             sensor_range=sensor_range,
+            sensor_use_camera_fov=sensor_use_camera_fov,
             control_mode=control_mode,
             disturbances=disturbances,
             randomizations=randomizations,
@@ -122,6 +125,7 @@ class VecDroneRaceEnv(RaceCoreEnv, VectorEnv):
         seed: int = 1337,
         max_episode_steps: int = 1500,
         device: Literal["cpu", "gpu"] = "cpu",
+        sensor_use_camera_fov: bool = False,
     ):
         """Initialize the vectorized single-agent drone racing environment.
 
@@ -131,6 +135,7 @@ class VecDroneRaceEnv(RaceCoreEnv, VectorEnv):
             sim_config: Simulation configuration.
             track: Track configuration.
             sensor_range: Sensor range.
+            sensor_use_camera_fov: Use the FPV camera's rectangular field of view.
             control_mode: Control mode for the drones. See `build_action_space` for details.
             disturbances: Disturbance configuration.
             randomizations: Randomization configuration.
@@ -145,6 +150,7 @@ class VecDroneRaceEnv(RaceCoreEnv, VectorEnv):
             sim_config=sim_config,
             track=track,
             sensor_range=sensor_range,
+            sensor_use_camera_fov=sensor_use_camera_fov,
             control_mode=control_mode,
             disturbances=disturbances,
             randomizations=randomizations,

@@ -44,7 +44,8 @@ lookat = [0.0, 0.0, 0.0]
 id = "DroneRacing-v0"   # "DroneRacing-v0" for single races, "MultiDroneRacing-v0" for multi-drone races. Each environment also implements a vector-environment for faster training
 seed = -1               # -1 for random seeds or a non-zero integer for reproducibility
 freq = 50               # Frequency of the environment's step function, in Hz
-sensor_range = 0.7      # Range at which the exact location of gates and obstacles become visible to the drone. Objects that are not in the drone's sensor range report their nominal position.
+sensor_range = 1.0      # Strict 3D distance limit from the FPV camera to an object's reference point.
+sensor_use_camera_fov = true # Use the FPV camera's horizontal and vertical FOV; remember detections.
 control_mode = "state"  # Control mode of the environment. Can be either "state" or "attitude"
 
 [env.track]
