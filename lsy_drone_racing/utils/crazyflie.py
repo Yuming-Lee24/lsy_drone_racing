@@ -143,20 +143,18 @@ class Crazyflie:
         pos: NDArray[np.floating],
         vel: NDArray[np.floating] | None = None,
         acc: NDArray[np.floating] | None = None,
-        yaw: float | None = None,
+        quat: NDArray[np.floating] | None = None,
         body_rates: NDArray[np.floating] | None = None,
     ) -> None:
-        """Send a state command with yaw-only orientation."""
+        """Send a state command with an (x, y, z, w) attitude quaternion."""
         if vel is None:
             vel = np.zeros(3)
         if acc is None:
             acc = np.zeros(3)
-        if yaw is None:
-            yaw = 0.0
+        if quat is None:
+            quat = np.array([0.0, 0.0, 0.0, 1.0])
         if body_rates is None:
             body_rates = np.zeros(3)
-        quat = R.from_euler("z", yaw).as_quat()
-        # TODO have quat as argument and just forward it -> need to change action interface
         self._run(self._send_full_state_setpoint, pos, vel, acc, quat, body_rates)
 
     def return_to_start(

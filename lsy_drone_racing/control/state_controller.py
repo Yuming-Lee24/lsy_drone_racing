@@ -76,15 +76,15 @@ class StateController(Controller):
             info: Optional additional information as a dictionary.
 
         Returns:
-            The drone state [x, y, z, vx, vy, vz, ax, ay, az, yaw, rrate, prate, yrate] as a numpy
-                array.
+            The drone state [x, y, z, vx, vy, vz, ax, ay, az, qx, qy, qz, qw, wx, wy, wz] as a
+            numpy array.
         """
         t = min(self._tick / self._freq, self._t_total)
         if t >= self._t_total:  # Maximum duration reached
             self._finished = True
 
         des_pos = self._des_pos_spline(t)
-        action = np.concatenate((des_pos, np.zeros(10)), dtype=np.float32)
+        action = np.concatenate((des_pos, np.zeros(9), [1.0], np.zeros(3)), dtype=np.float32)
         return action
 
     def step_callback(

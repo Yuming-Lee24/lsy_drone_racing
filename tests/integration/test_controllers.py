@@ -110,7 +110,8 @@ def test_trajectory_controller_finish(yaw: float, dynamics: str):
     ctrl = ctrl_cls(obs, info, config)
     while True:
         action = ctrl.compute_control(obs, info)
-        action[9] = yaw  # Quadrotor should be able to finish the track regardless of yaw
+        # Quadrotor should be able to finish the track regardless of yaw
+        action[9:13] = [0.0, 0.0, np.sin(yaw / 2), np.cos(yaw / 2)]
         obs, reward, terminated, truncated, info = env.step(action)
         ctrl.step_callback(action, obs, reward, terminated, truncated, info)
         if terminated or truncated:

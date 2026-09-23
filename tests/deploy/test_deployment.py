@@ -73,10 +73,11 @@ def state_circle(drone: Any, center: np.ndarray, height: float, radius: float, f
     t_start = time.perf_counter()
     for step in range(steps):
         alpha = (step + 1) / steps
-        action = np.zeros(13, dtype=np.float32)
+        action = np.zeros(16, dtype=np.float32)
         action[:3] = (1 - alpha) * start + alpha * target
         action[3:6] = (target - start) / takeoff_duration
-        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9], action[10:])
+        action[12] = 1.0
+        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9:13], action[13:16])
         drone.send_external_pose()
         sleep_step(t_start, step, freq)
 
@@ -86,13 +87,14 @@ def state_circle(drone: Any, center: np.ndarray, height: float, radius: float, f
     t_start = time.perf_counter()
     for step in range(steps):
         theta = omega * step / freq
-        action = np.zeros(13, dtype=np.float32)
+        action = np.zeros(16, dtype=np.float32)
         action[:3] = target + np.array([radius * np.cos(theta), radius * np.sin(theta), 0.0])
         action[3:6] = [-radius * omega * np.sin(theta), radius * omega * np.cos(theta), 0.0]
         action[6:9] = [-radius * omega**2 * np.cos(theta), -radius * omega**2 * np.sin(theta), 0.0]
-        action[9] = theta + np.pi / 2
-        action[12] = omega
-        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9], action[10:])
+        yaw = theta + np.pi / 2
+        action[9:13] = [0.0, 0.0, np.sin(yaw / 2), np.cos(yaw / 2)]
+        action[15] = omega
+        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9:13], action[13:16])
         drone.send_external_pose()
         sleep_step(t_start, step, freq)
     logger.info("Finished state-command circle.")

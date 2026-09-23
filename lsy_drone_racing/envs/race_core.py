@@ -231,11 +231,12 @@ def build_action_space(
             or "attitude" for attitude control.
         drone: Drone model of the environment.
         dynamics: Dynamics model used by the simulation.
+
     Returns:
         A Box space representing the action space for the specified control mode.
     """
     if control_mode == "state":
-        return spaces.Box(low=-np.inf, high=np.inf, shape=(13,))
+        return spaces.Box(low=-np.inf, high=np.inf, shape=(16,))
     if control_mode == "attitude":
         params = load_dynamics_params(dynamics, drone)
         thrust_min, thrust_max = params["thrust_min"] * 4, params["thrust_max"] * 4
@@ -318,7 +319,7 @@ class RaceCoreEnv:
       obstacles and the true position is known
 
     The action space consists of a desired full-state command
-    [x, y, z, vx, vy, vz, ax, ay, az, yaw, rrate, prate, yrate] that is tracked by the drone's
+    [x, y, z, vx, vy, vz, ax, ay, az, qx, qy, qz, qw, wx, wy, wz] that is tracked by the drone's
     low-level controller, or a desired collective thrust and attitude command [collective thrust,
     roll, pitch, yaw].
     """
@@ -480,8 +481,8 @@ class RaceCoreEnv:
 
         Args:
             data: The environment data.
-            action: Full-state command [x, y, z, vx, vy, vz, ax, ay, az, yaw, rrate, prate, yrate]
-                to follow.
+            action: Full-state command
+                [x, y, z, vx, vy, vz, ax, ay, az, qx, qy, qz, qw, wx, wy, wz] to follow.
         """
 
     def render(self):

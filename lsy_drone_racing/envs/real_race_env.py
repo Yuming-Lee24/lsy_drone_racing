@@ -170,7 +170,7 @@ class RealRaceCoreEnv:
             )
         else:
             self.drone.send_action_state(
-                action[:3], action[3:6], action[6:9], action[9], action[10:]
+                action[:3], action[3:6], action[6:9], action[9:13], action[13:16]
             )
 
         drone_pos = np.stack([self._ros_connector.pos[drone] for drone in self.drone_names])
@@ -389,7 +389,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
         Action space:
             The action space is a single action vector for the drone with the environment rank.
             See [RealRaceCoreEnv][lsy_drone_racing.envs.real_race_env.RealRaceCoreEnv] for more
-            information. Depending on the control mode, it is either a 13D desired drone state
+            information. Depending on the control mode, it is either a 16D desired drone state
             setpoint, or a 4D desired attitude and collective thrust setpoint.
 
         Observation space:
