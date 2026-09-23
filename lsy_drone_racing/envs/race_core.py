@@ -31,7 +31,7 @@ import jax
 import jax.numpy as jp
 import mujoco
 import numpy as np
-from crazyflow.drones import load_params as load_hardware_params
+from crazyflow.dynamics import load_params as load_dynamics_params
 from crazyflow.sim import Sim
 from crazyflow.sim.pipeline import append_fn, insert_fn_before
 from crazyflow.sim.sim import seed_sim, sync_sim2mjx, use_box_collision
@@ -221,21 +221,23 @@ class EnvSettings:
         )
 
 
-def build_action_space(control_mode: Literal["state", "attitude"], drone: str) -> spaces.Box:
+def build_action_space(
+    control_mode: Literal["state", "attitude"], drone: str, dynamics: str
+) -> spaces.Box:
     """Create the action space for the environment.
 
     Args:
         control_mode: The control mode to use. Either "state" for full-state control
             or "attitude" for attitude control.
         drone: Drone model of the environment.
-
+        dynamics: Dynamics model used by the simulation.
     Returns:
         A Box space representing the action space for the specified control mode.
     """
     if control_mode == "state":
         return spaces.Box(low=-np.inf, high=np.inf, shape=(13,))
     if control_mode == "attitude":
-        params = load_hardware_params(drone)
+        params = load_dynamics_params(dynamics, drone)
         thrust_min, thrust_max = params["thrust_min"] * 4, params["thrust_max"] * 4
         return spaces.Box(
             np.array([-np.pi / 2, -np.pi / 2, -np.pi / 2, thrust_min], dtype=np.float32),
@@ -571,7 +573,7 @@ class RaceCoreEnv:
 
     def build_apply_action_fn(self) -> Callable[[Array, EnvData, EnvSettings], EnvData]:
         """Build a function that applies the action to the simulation."""
-        action_space = build_action_space(self.sim.control, self.sim.drone)
+        action_space = build_action_space(self.sim.control, self.sim.drone, self.sim.dynamics)
         if self.sim.control == "state":
             ctrl_fn = F.state_control
         elif self.sim.control == "attitude":

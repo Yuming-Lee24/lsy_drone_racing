@@ -14,8 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import scipy
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
-from crazyflow.drones import load_params as load_hardware_params
-from crazyflow.dynamics.core import load_params as load_dynamics_params
+from crazyflow.dynamics import load_fn_params, load_params
 from crazyflow.dynamics.so_rpy import dynamics, symbolic_dynamics_euler
 from crazyflow.dynamics.utils.rotation import ang_vel2rpy_rates
 from scipy.interpolate import CubicSpline
@@ -212,8 +211,8 @@ class AttitudeMPC(Controller):
         )
         self._waypoints_yaw = self._waypoints_pos[:, 0] * 0
 
-        self.drone_params = load_dynamics_params(dynamics, config.sim.drone)
-        thrust_params = load_hardware_params(config.sim.drone)
+        self.drone_params = load_fn_params(dynamics, config.sim.drone)
+        thrust_params = load_params(config.sim.dynamics, config.sim.drone)
         self.drone_params["thrust_min"] = 4 * thrust_params["thrust_min"]
         self.drone_params["thrust_max"] = 4 * thrust_params["thrust_max"]
         self._acados_ocp_solver, self._ocp = create_ocp_solver(
