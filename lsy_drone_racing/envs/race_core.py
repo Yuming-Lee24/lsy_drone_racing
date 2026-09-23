@@ -387,6 +387,18 @@ class RaceCoreEnv:
             device=device,
             xml_path=Path(p) if (p := getattr(sim_config, "xml_path", None)) else None,
         )
+        # Expand inertial parameters over worlds and drones to support independent randomization
+        # and per-world resets.
+        params = self.sim.data.params
+        params = params.replace(
+            **{
+                name: jp.broadcast_to(
+                    getattr(params, name), (n_envs, n_drones, *getattr(params, name).shape)
+                )
+                for name in ("mass", "J", "J_inv")
+            }
+        )
+        self.sim.data = self.sim.data.replace(params=params)
         self._load_track_into_sim(track)
         use_box_collision(self.sim, True)
 
