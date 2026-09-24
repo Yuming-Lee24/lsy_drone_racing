@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Literal
 import jax
 import numpy as np
 import rclpy
-from crazyflow.drones import load_params as load_hardware_params
+from crazyflow.control import load_params as load_control_params
+from crazyflow.dynamics import load_params as load_dynamics_params
 from drone_estimators.ros_nodes.ros2_connector import ROSConnector
 from gymnasium import Env
 from scipy.spatial.transform import Rotation as R
@@ -75,6 +76,7 @@ class RealRaceCoreEnv:
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
+        dynamics: str,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -86,6 +88,7 @@ class RealRaceCoreEnv:
             freq: Environment step frequency.
             track: Track configuration (see `load_track`).
             randomizations: Randomization configuration.
+            dynamics: Dynamics model used to load the drone's physical parameters.
             sensor_range: Sensor range. Determines at which distance the exact position of the
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
@@ -110,7 +113,12 @@ class RealRaceCoreEnv:
         self.control_mode = control_mode
         self.randomizations = randomizations
         drone_config = drones[rank]
-        self.drone_parameters = load_hardware_params(drone_config["drone"])
+        self.drone_parameters = load_dynamics_params(dynamics, drone_config["drone"])
+        # PWM limits are firmware control parameters, separate from the dynamics parameters.
+        control_params = load_control_params("mellinger", drone_config["drone"])["core"]
+        self.drone_parameters.update(
+            pwm_min=control_params["pwm_min"], pwm_max=control_params["pwm_max"]
+        )
         self.drone = Crazyflie.from_radio(
             radio_id=self.rank,
             radio_channel=drone_config["channel"],
@@ -381,6 +389,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
+        dynamics: str,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -405,6 +414,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
             freq: Environment step frequency.
             track: Track configuration (see `load_track`).
             randomizations: Randomization configuration.
+            dynamics: Dynamics model used to load the drone's physical parameters.
             sensor_range: Sensor range. Determines at which distance the exact position of the
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
@@ -415,6 +425,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
             freq=freq,
             track=track,
             randomizations=randomizations,
+            dynamics=dynamics,
             sensor_range=sensor_range,
             control_mode=control_mode,
         )
@@ -486,6 +497,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
+        dynamics: str,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -497,6 +509,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
             freq: Environment step frequency.
             track: Track configuration (see `load_track`).
             randomizations: Randomization configuration.
+            dynamics: Dynamics model used to load the drone's physical parameters.
             sensor_range: Sensor range. Determines at which distance the exact position of the
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
@@ -507,6 +520,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
             freq=freq,
             track=track,
             randomizations=randomizations,
+            dynamics=dynamics,
             sensor_range=sensor_range,
             control_mode=control_mode,
         )
