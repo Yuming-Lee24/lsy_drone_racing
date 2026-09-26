@@ -130,8 +130,8 @@ def create_ocp_solver(
     ocp.constraints.idxbx = np.array([3, 4, 5])
 
     # Set Input Constraints (rpy < 30°)
-    ocp.constraints.lbu = np.array([-0.5, -0.5, -0.5, parameters["thrust_min"] * 4])
-    ocp.constraints.ubu = np.array([0.5, 0.5, 0.5, parameters["thrust_max"] * 4])
+    ocp.constraints.lbu = np.array([-0.5, -0.5, -0.5, parameters["thrust_min"]])
+    ocp.constraints.ubu = np.array([0.5, 0.5, 0.5, parameters["thrust_max"]])
     ocp.constraints.idxbu = np.array([0, 1, 2, 3])
 
     # We have to set x0 even though we will overwrite it later on.
