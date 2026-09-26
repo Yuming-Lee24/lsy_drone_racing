@@ -26,6 +26,7 @@ from lsy_drone_racing.utils.checks import check_drone_start_pos, check_race_trac
 from lsy_drone_racing.utils.crazyflie import Crazyflie
 
 if TYPE_CHECKING:
+    from crazyflow.dynamics import Dynamics
     from ml_collections import ConfigDict
     from numpy.typing import NDArray
 
@@ -76,7 +77,7 @@ class RealRaceCoreEnv:
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
-        dynamics: str,
+        dynamics: Dynamics,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -116,9 +117,8 @@ class RealRaceCoreEnv:
         self.drone_parameters = load_dynamics_params(dynamics, drone_config["drone"])
         # PWM limits are firmware control parameters, separate from the dynamics parameters.
         control_params = load_control_params("mellinger", drone_config["drone"])["core"]
-        self.drone_parameters.update(
-            pwm_min=control_params["pwm_min"], pwm_max=control_params["pwm_max"]
-        )
+        self.drone_parameters.update(pwm_min=control_params["pwm_min"])
+        self.drone_parameters.update(pwm_max=control_params["pwm_max"])
         self.drone = Crazyflie.from_radio(
             radio_id=self.rank,
             radio_channel=drone_config["channel"],
@@ -389,7 +389,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
-        dynamics: str,
+        dynamics: Dynamics,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -497,7 +497,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
-        dynamics: str,
+        dynamics: Dynamics,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):

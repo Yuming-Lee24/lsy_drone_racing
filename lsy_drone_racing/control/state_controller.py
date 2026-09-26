@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from crazyflow.sim.visualize import draw_line, draw_points
 from scipy.interpolate import CubicSpline
+from scipy.spatial.transform import Rotation as R
 
 from lsy_drone_racing.control import Controller
 
@@ -84,7 +85,9 @@ class StateController(Controller):
             self._finished = True
 
         des_pos = self._des_pos_spline(t)
-        action = np.concatenate((des_pos, np.zeros(9), [1.0], np.zeros(3)), dtype=np.float32)
+        des_yaw = 0.0
+        des_quat = R.from_euler("z", des_yaw).as_quat()
+        action = np.concatenate((des_pos, np.zeros(6), des_quat, np.zeros(3)), dtype=np.float32)
         return action
 
     def step_callback(

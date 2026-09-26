@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from crazyflow.control import load_params as load_control_params
 from crazyflow.dynamics import load_params as load_dynamics_params
+from scipy.spatial.transform import Rotation as R
 
 from lsy_drone_racing.control.attitude_controller import AttitudeController
 from lsy_drone_racing.utils import load_config
@@ -76,7 +78,7 @@ def state_circle(drone: Any, center: np.ndarray, height: float, radius: float, f
         action = np.zeros(16, dtype=np.float32)
         action[:3] = (1 - alpha) * start + alpha * target
         action[3:6] = (target - start) / takeoff_duration
-        action[12] = 1.0
+        action[9:13] = R.from_euler("z", 0.0).as_quat()
         drone.send_action_state(action[:3], action[3:6], action[6:9], action[9:13], action[13:16])
         drone.send_external_pose()
         sleep_step(t_start, step, freq)
@@ -92,7 +94,7 @@ def state_circle(drone: Any, center: np.ndarray, height: float, radius: float, f
         action[3:6] = [-radius * omega * np.sin(theta), radius * omega * np.cos(theta), 0.0]
         action[6:9] = [-radius * omega**2 * np.cos(theta), -radius * omega**2 * np.sin(theta), 0.0]
         yaw = theta + np.pi / 2
-        action[9:13] = [0.0, 0.0, np.sin(yaw / 2), np.cos(yaw / 2)]
+        action[9:13] = R.from_euler("z", yaw).as_quat()
         action[15] = omega
         drone.send_action_state(action[:3], action[3:6], action[6:9], action[9:13], action[13:16])
         drone.send_external_pose()
@@ -200,7 +202,9 @@ def main() -> None:
     radio_id = args.rank if args.radio_id is None else args.radio_id
     home_pos = np.array(config.env.track.drones[args.rank]["pos"], dtype=np.float32)
     drone_params = load_dynamics_params(config.sim.dynamics, drone_config["drone"])
-    drone_params.update(pwm_min=7000, pwm_max=65535)
+    control_params = load_control_params("mellinger", drone_config["drone"])["core"]
+    drone_params.update(pwm_min=control_params["pwm_min"])
+    drone_params.update(pwm_max=control_params["pwm_max"])
 
     logger.info("Initializing ROS for %s.", drone_name)
     rclpy.init()

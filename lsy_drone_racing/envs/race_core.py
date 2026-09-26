@@ -53,6 +53,8 @@ from lsy_drone_racing.envs.randomize import (
 from lsy_drone_racing.envs.utils import gate_passed, load_gate_order, load_track
 
 if TYPE_CHECKING:
+    from crazyflow.drones import Drone
+    from crazyflow.dynamics import Dynamics
     from crazyflow.sim.data import SimData
     from jax import Array, Device
     from ml_collections import ConfigDict
@@ -222,7 +224,7 @@ class EnvSettings:
 
 
 def build_action_space(
-    control_mode: Literal["state", "attitude"], drone: str, dynamics: str
+    control_mode: Literal["state", "attitude"], drone: Drone, dynamics: Dynamics
 ) -> spaces.Box:
     """Create the action space for the environment.
 
@@ -388,18 +390,6 @@ class RaceCoreEnv:
             device=device,
             xml_path=Path(p) if (p := getattr(sim_config, "xml_path", None)) else None,
         )
-        # Expand inertial parameters over worlds and drones to support independent randomization
-        # and per-world resets.
-        params = self.sim.data.params
-        params = params.replace(
-            **{
-                name: jp.broadcast_to(
-                    getattr(params, name), (n_envs, n_drones, *getattr(params, name).shape)
-                )
-                for name in ("mass", "J", "J_inv")
-            }
-        )
-        self.sim.data = self.sim.data.replace(params=params)
         self._load_track_into_sim(track)
         use_box_collision(self.sim, True)
 

@@ -146,7 +146,7 @@ class Crazyflie:
         quat: NDArray[np.floating] | None = None,
         body_rates: NDArray[np.floating] | None = None,
     ) -> None:
-        """Send a state command with an (x, y, z, w) attitude quaternion."""
+        """Send a state command."""
         if vel is None:
             vel = np.zeros(3)
         if acc is None:
