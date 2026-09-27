@@ -130,8 +130,10 @@ def create_ocp_solver(
     ocp.constraints.idxbx = np.array([3, 4, 5])
 
     # Set Input Constraints (rpy < 30°)
-    ocp.constraints.lbu = np.array([-0.5, -0.5, -0.5, parameters["thrust_min"]])
-    ocp.constraints.ubu = np.array([0.5, 0.5, 0.5, parameters["thrust_max"]])
+    total_thrust_min = parameters["thrust_min"] * 4
+    total_thrust_max = parameters["thrust_max"] * 4
+    ocp.constraints.lbu = np.array([-0.5, -0.5, -0.5, total_thrust_min])
+    ocp.constraints.ubu = np.array([0.5, 0.5, 0.5, total_thrust_max])
     ocp.constraints.idxbu = np.array([0, 1, 2, 3])
 
     # We have to set x0 even though we will overwrite it later on.
@@ -212,8 +214,6 @@ class AttitudeMPC(Controller):
         self._waypoints_yaw = self._waypoints_pos[:, 0] * 0
 
         self.drone_params = load_params(Dynamics.so_rpy, config.sim.drone)
-        self.drone_params["thrust_min"] *= 4
-        self.drone_params["thrust_max"] *= 4
         self._acados_ocp_solver, self._ocp = create_ocp_solver(
             self._T_HORIZON, self._N, self.drone_params
         )

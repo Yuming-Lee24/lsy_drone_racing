@@ -131,7 +131,8 @@ class Crazyflie:
         publish_to_ros: bool = True,
     ) -> None:
         """Send a roll, pitch, yaw-rate, and collective-thrust command."""
-        pwm = force2pwm(thrust, drone_parameters["thrust_max"] * 4, drone_parameters["pwm_max"])
+        total_thrust_max = drone_parameters["thrust_max"] * 4
+        pwm = force2pwm(thrust, total_thrust_max, drone_parameters["pwm_max"])
         pwm = np.clip(pwm, drone_parameters["pwm_min"], drone_parameters["pwm_max"])
         command = (*np.rad2deg(attitude), int(pwm))
         self._run(self._send_attitude_setpoint, *command)
