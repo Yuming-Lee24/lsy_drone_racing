@@ -2,55 +2,33 @@
 
 This guide will walk you through the process of setting up the LSY Autonomous Drone Racing project on your system.
 
-## Prerequisites
+## Before You Start
+
+### Supported platforms and environments
+
+We recommend using **Ubuntu (x86-64)**, which supports all environments listed below, including GPU simulation and real-drone deployment.
+
+| Pixi environment | Purpose | Ubuntu (x86-64) | macOS (Apple Silicon) | Windows (x86-64, native) |
+| --- | --- | --- | --- | --- |
+| `default` | CPU simulation and controller development | Yes | Yes | Yes |
+| `deploy` | Real-drone deployment with ROS 2 | Yes | No | No |
+| `gpu` | CUDA simulation | Yes | No | No |
+| `tests` | Tests | Yes | Yes | Yes |
+| `gpu-tests` | Tests with CUDA | Yes | No | No |
+| `docs` | Build and preview documentation | Yes | Yes | Yes |
+
+Use `default` for simulation and `deploy` for real-drone deployment. Follow the installation steps below to set up the appropriate environment.
+
+### Prerequisites
 
 Before you begin, ensure you have the following:
 
 - [Git](https://git-scm.com/install/) installed on your system
 - A [GitHub](https://github.com/) account
-- A [Robostack](https://robostack.github.io/index.html/) environment with [pixi running ROS2 Jazzy](https://robostack.github.io/GettingStarted.html#__tabbed_1_3/)（automatically installed during the deployment setup below）
 
-!!! note
-    You can also use [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) or other dependency management tools, but we won't cover them here in full detail.
+## Quick Start: Simulation
 
-## Required Repositories
-
-The LSY Autonomous Drone Racing project requires you to fork the drone racing repository:
-
-[lsy_drone_racing](https://github.com/learnsyslab/lsy_drone_racing) (main branch)
-
-This repository contains the drone simulation, environments, and scripts to simulate and deploy the drones in the racing challenge.
-
-Depending on if you want to use the simulation only or also deploy on real drones, you need additional dependencies. Note that you don't have to install any of those manually, since our setup scripts will take care of that.
-
-### In Simulation
-
-- [lsy_drone_racing](https://github.com/learnsyslab/lsy_drone_racing) – environments and scripts for simulation and deployment
-- [crazyflow](https://github.com/learnsyslab/crazyflow) – drone simulator
-- [drone-models](https://github.com/learnsyslab/drone-models) – Crazyflie dynamics models
-- [drone-controllers](https://github.com/learnsyslab/drone-controllers) – controller implementations
-
-### On Hardware
-
-To run the project on real drones, add:
-
-- [motion_capture_tracking](https://github.com/learnsyslab/motion_capture_tracking) – publishes motion capture data to ROS2
-- [drone-estimators](https://github.com/learnsyslab/drone-estimators) – drone state estimators
-
-## Step-by-Step Installation
-
-### Fork lsy_drone_racing
-
-Start by forking the [lsy_drone_racing](https://github.com/learnsyslab/lsy_drone_racing) repository for your own group. This serves two purposes:
-
-1. You'll have your own repository with git version control and automated testing.
-2. It sets you up for participating in the [online competition](../challenge/online_competition.md).
-
-If you're new to GitHub, refer to the [GitHub documentation on forking](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo).
-
-### Setting up your environment
-
-#### Pixi package manager (Recommended)
+### Install Pixi
 
 We recommend using [Pixi](https://pixi.sh) to manage dependencies  and virtual environments for this project. Pixi creates a dedicated .pixi directory in the project root, which contains the isolated virtual environment. We use Pixi in combination with RoboStack. Robostack lets you install your favorite ROS version independent of your OS. Installed packages are cached globally under ~/.cache/rattler/ to speed up subsequent environment setups across projects.
 
@@ -67,50 +45,15 @@ Install Pixi:
     ```powershell
     powershell -ExecutionPolicy Bypass -c "irm -useb https://pixi.sh/install.ps1 | iex"
     ```
-To activate the environment, simply run
 
-```bash
-pixi shell
-# or
-pixi shell -e <environment_name>
-```
+### Fork and Clone the Repository
 
-!!! note
-    To leave a pixi shell, run `exit` or press **Ctrl+D**. Make sure to leave the shell before you activate another shell.
+Start by forking the [lsy_drone_racing](https://github.com/learnsyslab/lsy_drone_racing) repository for your own group. This serves two purposes:
 
-On the first invocation, Pixi will automatically resolve and install all required dependencies.
+1. You'll have your own repository with git version control and automated testing.
+2. It sets you up for participating in the [online competition](../challenge/online_competition.md).
 
-!!! note
-    In the pixi shell, you can still use pip to install any packages you need.
-
-#### Micromamba package manager (Not recommended)
-
-You may also use  with [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html). We do not recommend this, since Mamba/Conda environments have the tendency to be leaky and share some system-wide packages. In our experience, this will lead to problems, which is why this project is optimized to use with pixi. If you want to use micromamba anyway, we can't guarantee support.
-
-#### Simulation & Hardware on our Lab PC 
-
-We provide a Workstation in the Lab on which you are allowed to run your controllers during deployment. Please create a new user for each team and follow the instructions below.
-
-#### Simulation only (Not Recommended)
-
-If you only want to run the simulation, you can use your favorite conda/mamba/venv to install the packages. However, you will need a working installation of ROS2 if you want to deploy your controller on the real drone.
-
-### Installation
-
-#### Supported platforms and environments
-
-| Pixi environment | Purpose | Ubuntu (x86-64) | macOS (Apple Silicon) | Windows (x86-64, native) |
-| --- | --- | --- | --- | --- |
-| `default` | CPU simulation and controller development | Yes | Yes | Yes |
-| `deploy` | Real-drone deployment with ROS 2 | Yes | No | No |
-| `gpu` | CUDA simulation | Yes | No | No |
-| `tests` | Tests | Yes | Yes | Yes |
-| `gpu-tests` | Tests with CUDA | Yes | No | No |
-| `docs` | Build and preview documentation | Yes | Yes | Yes |
-
-Use `default` for simulation and `deploy` for real-drone deployment. Follow the installation steps below to set up the appropriate environment.
-
-#### Clone repository
+If you're new to GitHub, refer to the [GitHub documentation on forking](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo).
 
 First, clone your fork from your own account and create a new environment by running
 
@@ -129,8 +72,9 @@ First, clone your fork from your own account and create a new environment by run
     cd "$HOME\repos"
     git clone https://github.com/<YOUR-USERNAME>/lsy_drone_racing.git
     cd lsy_drone_racing
+    ```
 
-#### Install simulation environment (developing & testing controllers)
+### Create the Simulation Environment
 
 Stay in the repository and run the following command to activate your pixi shell with the default (sim) environment:
 
@@ -144,11 +88,12 @@ pixi shell
 !!! note
     By running the commands above, our automated scripts will install and activate **acados** by default. This might cause the terminal to freeze for several minutes. [Acados](https://docs.acados.org/index.html) is an Optimal Control Framework that can be used to control the quadrotor using a Model Predictive Controller. If something does not work out of the box, we refer the reader to the [official installation guide](https://docs.acados.org/installation/).
 
-(Optional, Ubuntu Only)To speed up simulation with GPU , run:
+On the first invocation, Pixi will automatically resolve and install all required dependencies.
 
-```bash
-pixi shell -e gpu
-```
+!!! note
+    To leave a pixi shell, run `exit` or press **Ctrl+D**. Make sure to leave the shell before you activate another shell.
+
+### Run Your First Simulation
 
 Finally, you can test if the installation was successful by running
 
@@ -159,27 +104,17 @@ python scripts/sim.py
 
 If everything is installed correctly, this opens the simulator and simulates a drone flying through four gates.
 
-(Optional, Ubuntu Only) If you want to train RL policies, we recommend using a GPU-enabled environment for optimal performance. To install additional dependencies including [PyTorch](https://pytorch.org/) and [Wandb](https://wandb.ai/), stay in the gpu shell and run:
+## Hardware Setup (Ubuntu Only)
 
-```bash
-pip install -e .[rl]
-```
+### Prerequisites
 
-(Optional) You can also run the tests by directly running either
+- A [Robostack](https://robostack.github.io/index.html/) environment with [pixi running ROS2 Kilted](https://robostack.github.io/GettingStarted.html#__tabbed_1_3/)（automatically installed during the deployment setup below）
 
-```bash
-pixi run -e tests tests -v
-```
+### Simulation & Hardware on our Lab PC
 
-or by first activating the correct environment
+We provide a Workstation in the Lab on which you are allowed to run your controllers during deployment. Please create a new user for each team and follow the instructions below.
 
-```bash
-pixi shell -e tests
-cd ~/repos/lsy_drone_racing
-pytest tests
-```
-
-#### Install deployment environment (deploy controller to real drones, Ubuntu Only)
+### Create the Deployment Environment
 
 This is for the deployment in the lab, either on your own machine or on the lab PC. With a fresh terminal, stay in the repository and run:
 
@@ -192,11 +127,7 @@ This will automatically create a ros2 workspace with RoboStack, clone the motion
 !!! note
     By running the commands above, our automated scripts will install and activate **acados** by default. This might cause the terminal to freeze for several minutes. [Acados installation guide](https://docs.acados.org/index.html) is an Optimal Control Framework that can be used to control the quadrotor using a Model Predictive Controller. If something does not work out of the box, we refer the reader to the [official installation guide](https://docs.acados.org/installation/).
 
-Test your installation: For this to work you have to be in the lab and be connected to our local network.
-
-```bash
-ping 10.157.163.191
-```
+### Configure Crazyradio Permissions
 
 If this works, you need a total of *three* open terminals with the deploy environment activated to actually deploy your controller. Before we do that, however, we need to prepare the USB port for the Crazyradio to send commands to the Crazyflie drones. For that, execute the following block. Ask the TA to help you with sudo rights.
 
@@ -223,30 +154,76 @@ sudo udevadm trigger
     For TAs: Switch to the admin account using `su` and replace
     `YOUR-USERNAME` with the student's username.
 
-Now you are ready to deploy your controller on real drones. First, run the motion capture tracking node. If there are valid elements in the motion capture area, you should be able to see them in the rviz window.
+For motion tracking, state estimation, and controller deployment, continue with [Deployment](../challenge/deployment.md).
+
+## Optional Workflows
+
+### GPU Simulation and RL Training (Ubuntu Only)
+
+(Optional, Ubuntu Only)To speed up simulation with GPU , run:
 
 ```bash
-pixi run mocap
+pixi shell -e gpu
 ```
 
-Second, start another deploy shell and run the estimator node. Please check the actual DEC number on the drone, or the name shown in rviz. If this works, you should be able to see frequency information in terminal.
+(Optional, Ubuntu Only) If you want to train RL policies, we recommend using a GPU-enabled environment for optimal performance. To install additional dependencies including [PyTorch](https://pytorch.org/) and [Wandb](https://wandb.ai/), stay in the gpu shell and run:
 
 ```bash
-pixi run estimator cf01
+pip install -e .[rl]
 ```
 
-Lastly, run the deployment script with the correct configuration and controller.
+### Running Tests
+
+(Optional) You can also run the tests by directly running either
 
 ```bash
-python scripts/deploy.py --config level2.toml --controller <your_controller.py>
+pixi run -e tests tests -v
 ```
 
-!!! note
-    Be careful when flying the drone! Make sure to kill the process (**Ctrl+C**) immediately when your controller is unstable.
+or by first activating the correct environment
 
-#### Work on Existing Dependencies
+```bash
+cd ~/repos/lsy_drone_racing
+pixi shell -e tests
+pytest tests
+```
 
-If you want to do more in-depth development or understand the used packages ([crazyflow](https://github.com/learnsyslab/crazyflow), [drone-models](https://github.com/learnsyslab/drone-models), [drone-controllers](https://github.com/learnsyslab/drone-controllers), [drone-estimators](https://github.com/learnsyslab/drone-estimators)) better, you can fork and install all of those packages separately in editable mode. If you find bugs or other have improvements, feel free to [submit a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request) or [create an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue) to help us improve the code. The installation procedure is the same for all packages:
+### Building Documentation
+
+```bash
+pixi run -e docs docs-build
+```
+
+To preview the documentation locally:
+
+```bash
+pixi run -e docs docs-serve
+```
+
+## Advanced Development (Optional)
+
+This section covers modifying existing dependencies and adding packages for your controllers. You can skip it when getting started with the provided controllers.
+
+### Dependency Overview
+
+The repositories below provide the components used by this project. Apart from the main `lsy_drone_racing` repository, the required dependencies are installed automatically during setup. You only need to clone a dependency separately if you want to modify its source code.
+
+#### In Simulation
+
+- [lsy_drone_racing](https://github.com/learnsyslab/lsy_drone_racing) – environments and scripts for simulation and deployment
+- [crazyflow](https://github.com/learnsyslab/crazyflow) – drone simulator with built-in drone models
+
+#### On Hardware
+
+Hardware deployment additionally uses:
+
+- [motion_capture_tracking](https://github.com/learnsyslab/motion_capture_tracking) – publishes motion capture data to ROS2
+- [drone-estimators](https://github.com/learnsyslab/drone-estimators) – drone state estimators
+- [drone-models](https://github.com/learnsyslab/drone-models) – Crazyflie dynamics models used by drone-estimators
+
+### Work on Existing Dependencies
+
+If you want to do more in-depth development or understand the used packages ([crazyflow](https://github.com/learnsyslab/crazyflow), [drone-models](https://github.com/learnsyslab/drone-models), [drone-estimators](https://github.com/learnsyslab/drone-estimators)) better, you can fork and install all of those packages separately in editable mode. If you find bugs or other have improvements, feel free to [submit a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request) or [create an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue) to help us improve the code. The installation procedure is the same for all packages:
 
 ```bash
 cd ~/repos/lsy_drone_racing
@@ -260,7 +237,7 @@ cd ~/repos/lsy_drone_racing
 
 After installation, you can change files in the cloned repository and the changes will directly affect your environment.
 
-#### Extended Dependencies
+### Extended Dependencies
 
 We want to encourage you to use other libraries to speed up your development process. The easiest way to use another library is to install it with pip inside your pixi shell.
 
@@ -278,7 +255,33 @@ After that, reopen your environment. This automatically adds the package to the 
 !!! note
     Changing the `pyproject.toml` will also update the `pixi.lock` file, which pins the exact versions of all packages. Make sure to commit both files to your repository, otherwise the tests on GitHub will fail.
 
-## Common errors
+### Managing Pixi Environments
+
+To activate the environment, simply run
+
+```bash
+pixi shell
+# or
+pixi shell -e <environment_name>
+```
+
+!!! note
+    In the pixi shell, you can still use pip to install any packages you need.
+
+### Alternative Environment Managers
+
+!!! note
+    You can also use [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) or other dependency management tools, but we won't cover them here in full detail.
+
+#### Micromamba package manager (Not recommended)
+
+You may also use  with [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html). We do not recommend this, since Mamba/Conda environments have the tendency to be leaky and share some system-wide packages. In our experience, this will lead to problems, which is why this project is optimized to use with pixi. If you want to use micromamba anyway, we can't guarantee support.
+
+#### Other package managers for simulation (Not Recommended)
+
+If you only want to run the simulation, you can use your favorite conda/mamba/venv to install the packages. However, you will need a working installation of ROS2 if you want to deploy your controller on the real drone.
+
+## Troubleshooting
 
 ### LIBUSB_ERROR_ACCESS (deployment only)
 

@@ -18,6 +18,8 @@ python scripts/sim.py -r -n 10
 
 This will render the simulation (`-r` or `--render`) and run 10 races in succession (`-n` or `--n_runs`). For a list of all arguments, use `-h` or `--help`.
 
+By default, rendering follows the `render` setting in the `[sim]` section of the TOML configuration. Use `--render=True` or `--render=False` to override it for the current run without modifying the configuration file.
+
 ## Switching Between Configurations
 
 You can choose which configuration to use by changing the `--config` command line option. For example, to run the example controller on the hardest scenario, use the following command:
