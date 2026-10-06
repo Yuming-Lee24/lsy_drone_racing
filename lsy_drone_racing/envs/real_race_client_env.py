@@ -16,9 +16,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import jax
 import numpy as np
+from crazyflow.control import load_params as load_control_params
+from crazyflow.control.transform import force2pwm
+from crazyflow.dynamics import load_params as load_dynamics_params
 from drone_estimators.ros_nodes.ros2_connector import ROSConnector
-from drone_models.core import load_params
-from drone_models.transform import force2pwm
 from drone_racing_msgs.msg import RealClientAction, RealHostState  # type: ignore[import-untyped]
 from drone_racing_msgs.srv import RealCalibrateClock  # type: ignore[import-untyped]
 from gymnasium import Env
@@ -29,6 +30,7 @@ from lsy_drone_racing.utils.ros import track_poses
 from lsy_drone_racing.utils.ros_race_comm import RaceCommNode, calibrate_clock
 
 if TYPE_CHECKING:
+    from crazyflow.dynamics import Dynamics
     from ml_collections import ConfigDict
     from numpy.typing import NDArray
 
@@ -61,6 +63,7 @@ class RealMultiDroneRaceEnvClient(Env):
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
+        dynamics: Dynamics,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -68,11 +71,12 @@ class RealMultiDroneRaceEnvClient(Env):
 
         Args:
             drones: List of all drones in the race, each with ``id``, ``channel``, and
-                ``drone_model`` keys.
+                ``drone`` keys.
             rank: Index of this drone among all drones in the race.
             freq: Control frequency in Hz.
             track: Track configuration (see :func:`~lsy_drone_racing.envs.utils.load_track`).
             randomizations: Randomization configuration (unused on the client side).
+            dynamics: Dynamics model used to load the drone's physical parameters.
             sensor_range: Distance in metres at which gate/obstacle true poses are revealed.
             control_mode: Either ``"state"`` or ``"attitude"``.
         """
@@ -83,9 +87,12 @@ class RealMultiDroneRaceEnvClient(Env):
         self.control_mode = control_mode
         self.drone_names = [f"cf{drone['id']}" for drone in drones]
         self.drone_name = self.drone_names[rank]
-        self.drone_parameters: dict = load_params(
-            physics="first_principles", drone_model=drones[rank]["drone_model"]
-        )
+        drone_model = drones[rank]["drone"]
+        self.drone_parameters: dict = load_dynamics_params(dynamics, drone_model)
+        # PWM limits are firmware control parameters, separate from the dynamics parameters.
+        control_params = load_control_params("mellinger", drone_model)["core"]
+        self.drone_parameters.update(pwm_min=control_params["pwm_min"])
+        self.drone_parameters.update(pwm_max=control_params["pwm_max"])
 
         self.gates, self.obstacles, self.drones_track = load_track(track)
         self.n_gates = len(self.gates.pos)
@@ -158,8 +165,9 @@ class RealMultiDroneRaceEnvClient(Env):
                 if self.control_mode == "attitude":
                     dummy_action = np.zeros(4, dtype=np.float32)
                 else:
-                    dummy_action = np.zeros(13, dtype=np.float32)
+                    dummy_action = np.zeros(16, dtype=np.float32)
                     dummy_action[:3] = self._ros_connector.pos[self.drone_name]
+                    dummy_action[9:13] = [0.0, 0.0, 0.0, 1.0]  # Identity quaternion (x, y, z, w)
                 self._send_action_update(dummy_action, stopped=False)
                 time.sleep(1 / self.freq)
 
@@ -279,7 +287,11 @@ class RealMultiDroneRaceEnvClient(Env):
         """Send a final stop message and close all ROS connections."""
         logger.info("Closing environment...")
         if self._client_action_pub:
-            stop_action = np.zeros(4 if self.control_mode == "attitude" else 13)
+            if self.control_mode == "attitude":
+                stop_action = np.zeros(4)
+            else:
+                stop_action = np.zeros(16)
+                stop_action[9:13] = [0.0, 0.0, 0.0, 1.0]  # Identity quaternion (x, y, z, w)
             for _ in range(5):
                 self._send_action_update(stop_action, stopped=True)
                 time.sleep(0.05)

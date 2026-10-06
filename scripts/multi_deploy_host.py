@@ -35,6 +35,7 @@ def main(config: str = "multi_level2.toml"):
         track=config_obj.env.track,
         deploy_args=config_obj.deploy,
         control_args=config_obj.env.kwargs,
+        dynamics=config_obj.sim.dynamics,
     )
     try:
         host.update_poses(

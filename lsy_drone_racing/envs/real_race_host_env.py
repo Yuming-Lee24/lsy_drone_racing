@@ -16,8 +16,9 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import rclpy
+from crazyflow.control import load_params as load_control_params
+from crazyflow.dynamics import load_params as load_dynamics_params
 from drone_estimators.ros_nodes.ros2_connector import ROSConnector
-from drone_models.core import load_params
 from drone_racing_msgs.msg import RealClientAction, RealHostState
 from drone_racing_msgs.srv import RealCalibrateClock
 
@@ -27,6 +28,7 @@ from lsy_drone_racing.utils.crazyflie import Crazyflie
 from lsy_drone_racing.utils.ros_race_comm import RaceCommNode
 
 if TYPE_CHECKING:
+    from crazyflow.dynamics import Dynamics
     from ml_collections import ConfigDict
     from numpy.typing import NDArray
 
@@ -53,6 +55,7 @@ class CrazyflieWorker:
         drone_id: int,
         drone_channel: int,
         drone_model: str,
+        dynamics: Dynamics,
         start_pos: NDArray[np.floating],
         return_to_start_event: mp.synchronize.Event,
         return_height_ready_event: mp.synchronize.Event,
@@ -70,6 +73,7 @@ class CrazyflieWorker:
             drone_id: Crazyflie hardware ID (used to build the radio URI).
             drone_channel: Radio channel to connect on.
             drone_model: Drone model name for loading thrust/PWM parameters.
+            dynamics: Dynamics model used to load the drone's physical parameters.
             start_pos: Start position the drone should return to after the race.
             return_to_start_event: Set while the worker is executing the return maneuver.
             return_height_ready_event: Set by the host once this drone's return height is ready.
@@ -108,9 +112,11 @@ class CrazyflieWorker:
 
         self.drone_name = f"cf{drone_id}"
         self.drone: Crazyflie | None = None
-        self.drone_params: dict = load_params(
-            physics="first_principles", drone_model=self.drone_model
-        )
+        self.drone_params: dict = load_dynamics_params(dynamics, self.drone_model)
+        # PWM limits are firmware control parameters, separate from the dynamics parameters.
+        control_params = load_control_params("mellinger", self.drone_model)["core"]
+        self.drone_params.update(pwm_min=control_params["pwm_min"])
+        self.drone_params.update(pwm_max=control_params["pwm_max"])
         self.last_msg: RealClientAction | None = None
         self.action_lock = threading.Lock()
         self._comm: RaceCommNode | None = None
@@ -194,8 +200,8 @@ class CrazyflieWorker:
                         action_array[0:3],
                         action_array[3:6],
                         action_array[6:9],
-                        action_array[9],
-                        action_array[10:12],
+                        action_array[9:13],
+                        action_array[13:16],
                     )
 
             if (t := time.perf_counter()) - self._last_drone_pos_update > 1 / self.POS_UPDATE_FREQ:
@@ -282,6 +288,7 @@ class CrazyflieWorker:
         drone_id: int,
         drone_channel: int,
         drone_model: str,
+        dynamics: Dynamics,
         start_pos: NDArray[np.floating],
         return_to_start_event: mp.synchronize.Event,
         return_height_ready_event: mp.synchronize.Event,
@@ -302,6 +309,7 @@ class CrazyflieWorker:
             drone_id=drone_id,
             drone_channel=drone_channel,
             drone_model=drone_model,
+            dynamics=dynamics,
             start_pos=start_pos,
             return_to_start_event=return_to_start_event,
             return_height_ready_event=return_height_ready_event,
@@ -337,6 +345,7 @@ class CrazyflieRealRaceHost:
     _drone_channels: list[int]
     _radio_ids: list[str]
     _drone_models: list[str]
+    _dynamics: Dynamics
     _processes: list[mp.Process]
     _drone_control_freq: list[float]
     _drone_control_mode: list[str]
@@ -344,14 +353,21 @@ class CrazyflieRealRaceHost:
     _init_barrier: mp.synchronize.Barrier | None
     _mp_ctx: mp.context.BaseContext
 
-    def __init__(self, track: ConfigDict, deploy_args: list[dict], control_args: list[dict]):
+    def __init__(
+        self,
+        track: ConfigDict,
+        deploy_args: list[dict],
+        control_args: list[dict],
+        dynamics: Dynamics,
+    ):
         """Initialize the host.
 
         Args:
             track: Track configuration (see :func:`~lsy_drone_racing.envs.utils.load_track`).
             deploy_args: List of drone configs, each with
-                         ``id``, ``channel``, ``radio``, and ``drone_model``.
+                         ``id``, ``channel``, ``radio``, and ``drone``.
             control_args: Per-drone kwargs, each with ``freq`` and ``control_mode``.
+            dynamics: Dynamics model used to load the drones' physical parameters.
         """
         self.gates, self.obstacles, self.drones_pose = load_track(track)
         self.n_gates = len(self.gates.pos)
@@ -362,7 +378,8 @@ class CrazyflieRealRaceHost:
         self._drone_ids = [drone["id"] for drone in deploy_args.drones]
         self._drone_channels = [drone["channel"] for drone in deploy_args.drones]
         self._radio_ids = [drone["radio"] for drone in deploy_args.drones]
-        self._drone_models = [drone["drone_model"] for drone in deploy_args.drones]
+        self._drone_models = [drone["drone"] for drone in deploy_args.drones]
+        self._dynamics = dynamics
         self._drone_control_freq = [kwargs["freq"] for kwargs in control_args]
         self._drone_control_mode = [kwargs["control_mode"] for kwargs in control_args]
         self._num_drones = len(deploy_args.drones)
@@ -483,6 +500,7 @@ class CrazyflieRealRaceHost:
                     self._drone_ids[rank],
                     self._drone_channels[rank],
                     self._drone_models[rank],
+                    self._dynamics,
                     self.drones_pose.pos[rank],
                     self._return_to_start_events[rank],
                     self._return_height_ready_events[rank],
