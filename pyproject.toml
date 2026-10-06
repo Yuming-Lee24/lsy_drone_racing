@@ -118,6 +118,12 @@ ros2-distro-mutex = "0.12.*"  # Pinned for motion_capture_tracking
 
 [tool.pixi.feature.kilted.activation]
 scripts = ["tools/setup_mocap.sh"]
+env = { RMW_IMPLEMENTATION = "rmw_zenoh_cpp", ZENOH_ROUTER_CHECK_ATTEMPTS = "-1", ZENOH_CONFIG_OVERRIDE = 'listen/endpoints=["tcp/0.0.0.0:0"];scouting/multicast/enabled=true' }
+
+[tool.pixi.feature.kilted.tasks.zenoh-router]
+# To use ROS with Zenoh backend, a router is mandatory
+cmd = "ros2 run rmw_zenoh_cpp rmw_zenohd"
+description = "Run the Zenoh router on the host machine"
 
 ## feature [deploy]
 [tool.pixi.feature.deploy.tasks]
