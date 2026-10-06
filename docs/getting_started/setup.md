@@ -10,12 +10,9 @@ We recommend using **Ubuntu (x86-64)**, which supports all environments listed b
 
 | Pixi environment | Purpose | Ubuntu (x86-64) | macOS (Apple Silicon) | Windows (x86-64, native) |
 | --- | --- | --- | --- | --- |
-| `default` | CPU simulation and controller development | Yes | Yes | Yes |
-| `deploy` | Real-drone deployment with ROS 2 | Yes | No | No |
-| `gpu` | CUDA simulation | Yes | No | No |
-| `tests` | Tests | Yes | Yes | Yes |
-| `gpu-tests` | Tests with CUDA | Yes | No | No |
-| `docs` | Build and preview documentation | Yes | Yes | Yes |
+| `default` | CPU simulation and controller development | ✅ | ✅ | ✅ |
+| `deploy` | Real-drone deployment with ROS 2 | ✅ | ❌ | ❌ |
+| `gpu` | CUDA simulation | ✅ | ❌ | ❌ |
 
 Use `default` for simulation and `deploy` for real-drone deployment. Follow the installation steps below to set up the appropriate environment.
 
@@ -83,9 +80,6 @@ pixi shell
 ```
 
 !!! note
-    Some subpackages currently depend on a prerelease version of [scipy](https://github.com/scipy/scipy), which needs to be built from source. This might take more than 10 minutes on older hardware.
-
-!!! note
     By running the commands above, our automated scripts will install and activate **acados** by default. This might cause the terminal to freeze for several minutes. [Acados](https://docs.acados.org/index.html) is an Optimal Control Framework that can be used to control the quadrotor using a Model Predictive Controller. If something does not work out of the box, we refer the reader to the [official installation guide](https://docs.acados.org/installation/).
 
 On the first invocation, Pixi will automatically resolve and install all required dependencies.
@@ -98,7 +92,6 @@ On the first invocation, Pixi will automatically resolve and install all require
 Finally, you can test if the installation was successful by running
 
 ```bash
-cd ~/repos/lsy_drone_racing
 python scripts/sim.py
 ```
 
@@ -219,11 +212,10 @@ Hardware deployment additionally uses:
 
 - [motion_capture_tracking](https://github.com/learnsyslab/motion_capture_tracking) – publishes motion capture data to ROS2
 - [drone-estimators](https://github.com/learnsyslab/drone-estimators) – drone state estimators
-- [drone-models](https://github.com/learnsyslab/drone-models) – Crazyflie dynamics models used by drone-estimators
 
 ### Work on Existing Dependencies
 
-If you want to do more in-depth development or understand the used packages ([crazyflow](https://github.com/learnsyslab/crazyflow), [drone-models](https://github.com/learnsyslab/drone-models), [drone-estimators](https://github.com/learnsyslab/drone-estimators)) better, you can fork and install all of those packages separately in editable mode. If you find bugs or other have improvements, feel free to [submit a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request) or [create an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue) to help us improve the code. The installation procedure is the same for all packages:
+If you want to do more in-depth development or understand the used packages ([crazyflow](https://github.com/learnsyslab/crazyflow), [drone-estimators](https://github.com/learnsyslab/drone-estimators)) better, you can fork and install all of those packages separately in editable mode. If you find bugs or other have improvements, feel free to [submit a pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request) or [create an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue) to help us improve the code. The installation procedure is the same for all packages:
 
 ```bash
 cd ~/repos/lsy_drone_racing
