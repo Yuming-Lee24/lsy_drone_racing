@@ -125,11 +125,7 @@ def test_trajectory_controller_finish(yaw: float, dynamics: Dynamics):
 
 @pytest.mark.integration
 def test_multi_drone_controllers():
-    """Test if the multi-drone example controllers complete the track together.
-
-    Mirrors `scripts/multi_sim.py`: the environment runs at the highest controller frequency, each
-    controller is only called on its own period, and finished drones are no longer controlled.
-    """
+    """Test if the multi-drone example controllers complete the track together."""
     config = load_config(Path(__file__).parents[2] / "config/multi_level0.toml")
     control_path = Path(__file__).parents[2] / "lsy_drone_racing/control"
     ctrl_classes = [load_controller(control_path / ctrl["file"]) for ctrl in config.controller]
