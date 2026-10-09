@@ -1,86 +1,33 @@
-"""ROS2-based communication for multi-drone racing coordination.
-
-Uses the ``drone_racing_msgs`` message types for type-safe pub/sub and the
-``RealCalibrateClock`` service for clock offset estimation. Each participant
-creates a :class:`RaceCommNode` which spins a
-:class:`~rclpy.executors.SingleThreadedExecutor` in a background daemon thread.
-
-Clock offset estimation uses the midpoint method over N round-trips::
-
-    offset = host_timestamp - (t_send + t_recv) / 2
-
-Clients apply this offset when timestamping every ``RealClientAction`` message so
-the host observes accurate one-way latency without clock skew.
-"""
+"""ROS2 node for the communication between host and clients in multi-drone races."""
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
-from typing import TYPE_CHECKING
 
 import rclpy
-from drone_racing_msgs.srv import RealCalibrateClock
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
-
-if TYPE_CHECKING:
-    from rclpy.client import Client
+from rclpy.parameter import Parameter
 
 logger = logging.getLogger(__name__)
-
-
-def calibrate_clock(client: Client, n: int = 5, timeout: float = 60.0) -> float:
-    """Estimate clock offset (host_time - client_time) in seconds via N round-trips.
-
-    Blocks until the :class:`~drone_racing_msgs.srv.RealCalibrateClock` service becomes
-    available or ``timeout`` is reached. Each call records the send and receive
-    times; the offset is estimated as::
-
-        offset = host_timestamp - (t_send + t_recv) / 2
-
-    and averaged over all ``n`` calls.
-
-    Args:
-        client: rclpy service client for the ``RealCalibrateClock`` service.
-        n: Number of round-trips to average.
-        timeout: Maximum time in seconds to wait for the service to become available.
-
-    Returns:
-        Estimated clock offset in seconds. Add this to ``time.time()`` on the client
-        to get the equivalent host-clock time.
-
-    Raises:
-        TimeoutError: If the service is not available within ``timeout`` seconds.
-    """
-    if not client.wait_for_service(timeout_sec=timeout):
-        raise TimeoutError(f"Calibration service not available after {timeout}s")
-    offsets = []
-    for _ in range(n):
-        t_send = time.time()
-        future = client.call_async(RealCalibrateClock.Request())
-        ready = threading.Event()
-        future.add_done_callback(lambda _: ready.set())
-        if not ready.wait(timeout=timeout):
-            raise TimeoutError("Clock calibration call timed out")
-        t_recv = time.time()
-        offsets.append(future.result().host_timestamp - (t_send + t_recv) / 2)
-    return sum(offsets) / len(offsets)
 
 
 class RaceCommNode:
     """ROS2 node for race coordination, spinning in a background daemon thread.
 
-    Access the underlying rclpy node via :attr:`node` to create publishers,
-    subscriptions, and services directly. All cleanup is handled by :meth:`close`.
+    Access the underlying rclpy node via :attr:`node` to create publishers and
+    subscriptions directly. All cleanup is handled by :meth:`close`.
 
     Args:
         name: ROS2 node name (must be unique within the process).
+        use_sim_time: Whether the node reads its time from the ``/clock`` topic instead of the
+            system clock.
     """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, *, use_sim_time: bool = False):
         """Initialize and spin the ROS2 node in a background thread."""
-        self.node = rclpy.create_node(name)
+        use_sim_time_parameter = Parameter("use_sim_time", Parameter.Type.BOOL, use_sim_time)
+        self.node = rclpy.create_node(name, parameter_overrides=[use_sim_time_parameter])
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self.node)
 
