@@ -7,12 +7,6 @@ find_package(builtin_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/Action.msg"
-  "msg/EpisodeEnd.msg"
-  "msg/EpisodeReset.msg"
-  "msg/Observations.msg"
-  "msg/StepResult.msg"
-  "msg/RaceEnd.msg"
   "msg/RealHostState.msg"
   "msg/RealClientAction.msg"
   "srv/RealCalibrateClock.srv"
