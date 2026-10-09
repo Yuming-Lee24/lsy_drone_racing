@@ -1,17 +1,22 @@
-# Split plan for PR 102 (rev 9, 2026-10-06)
+# Split plan for PR 102 (rev 10, 2026-10-09)
 
-Refs: PR head 7b581ed (upstream refs/pull/102/head), branch point f452f92, main 54e64cf.
+Refs: PR head 7b581ed (upstream refs/pull/102/head), branch point f452f92, main 54e64cf (the base of
+the integration branch and of the open PR branches; upstream/main is 7cbbaee since #144).
 Integration branch `multi-drone-integration`: 4731416 (port), fd904a0 (adapt to main), 292589a (controller fix).
 Basis: rev 8 came from code reading only. Since then the integration branch was built, tested and flown
 (2026-10-06). Line counts are still estimates.
+Rev 10 records the decisions taken after the review of #146: the six unused message types are removed,
+the thread excepthook is removed, and clock calibration is replaced by ROS simulated time (`/clock`).
+The integration branch itself still has the as-flown code (all messages, calibration).
 
-## Review status (2026-10-07, 14:25 UTC) - read this first in a new session
+## Review status (2026-10-09) - read this first in a new session
 The threads move: read the PRs on GitHub again before acting. Nothing below marked "suggested" has
 been decided by the user.
 
 - #143 (PR 0, SciPy fix): merged by amacati as 735437f. He asked to delete the explanatory paragraph
   of the test's docstring ("verbose test comment"); the user did.
-  To do: merge upstream/main (now 7cbbaee) into the integration branch.
+  To do: merge upstream/main (now 7cbbaee) into the integration branch; mind pyproject.toml, see the
+  last point under #144.
 - #144 ([Multi-drone 1], Zenoh): MERGED by amacati at 14:23 as 7cbbaee "Configure deploy env for
   Zenoh with multicast discovery (#144)": the three variables, no `zenoh-router` task. The thread
   is kept below for the day a router is needed.
@@ -41,8 +46,20 @@ been decided by the user.
     second machine (not tested). The multi-drone code was never flown on the default RMW.
   - Done by the user: 03e1e2a "Remove zenoh-router task" on `multi-drone-1-zenoh`, pushed.
   - The integration branch keeps its own task and its one-line `env = {...}` form in
-    pyproject.toml. Merging upstream/main will conflict there; take upstream's form.
-- #146 ([Multi-drone 2], messages + comm node): CHANGES_REQUESTED by amacati, eight inline comments.
+    pyproject.toml. `git merge upstream/main` reports no conflict there, but the result declares
+    `activation.env` twice (the inline form and upstream's table), which is invalid TOML, and keeps
+    the `zenoh-router` task (simulated in a scratch clone on 2026-10-09). Take upstream's file:
+    `git merge --no-commit upstream/main && git checkout upstream/main -- pyproject.toml`, then
+    commit.
+- #146 ([Multi-drone 2], messages + comm node): CHANGES_REQUESTED by amacati on 2026-10-07, eight
+  inline comments. ratheron and rducrist are requested reviewers and have not reviewed.
+  amacati, PR comment of 2026-10-09 14:35 UTC: "Any progress on this? We will need the multi-agent
+  part for the new semester". Not answered yet.
+  Replies so far, all by the user: thread 4 (2026-10-08: asks rducrist whether the unused messages
+  can be deleted; no answer), thread 5 (2026-10-09: ROS allows cmake > 4, it is pinned to 3.26 in
+  pyproject, "Should we pinned to >4 in pyproject?"; no answer), thread 6 (2026-10-09: the flag is
+  for cmake > 4, without it the mocap package does not compile there). Threads 1, 2, 3, 7 and 8
+  have no reply.
   1. ros_race_comm.py module docstring: no implementation details in the module description.
   2. EpisodeReset.msg: have one observation message and compose reset and step from it.
   3. RaceEnd.msg: how does it differ from EpisodeEnd, why not one message.
@@ -53,43 +70,163 @@ been decided by the user.
      a debug log "seems dangerous".
   8. calibrate_clock: replace it with ROS's built-in /clock topic. The host publishes it at 500 Hz,
      the clients use simulated time and so all share the host's clock.
-  Notes for the answers (facts checked on 2026-10-07, 13:41 UTC; the proposals were put to the
-  user and none is decided yet):
-  - 1: shorten the module docstring. No decision needed.
-  - 2 to 4: only RealClientAction, RealHostState and RealCalibrateClock are imported anywhere
-    (integration branch and PR 102 head). The other six came with ratheron's fb33705 (2026-06-09)
-    and were never used by code on PR 102. Suggested: remove the six from this PR (was PR 9),
-    which settles the three threads. Contradicts "carried over whole and unchanged" under Settled.
-  - 5 and 6: cmake is pinned to 3.26.0 in [tool.pixi.dependencies] by #94 (ratheron, 2026-06-10:
-    lock updates broke the mocap build). ament_cmake in Kilted asks for 3.20, so ROS does not
-    forbid cmake 4. -DCMAKE_POLICY_VERSION_MINIMUM only exists in cmake >= 4, where the mocap
-    package's vendored vrpn (minimum 2.6) needs it. Under 3.26 it is ignored: the colcon log of
-    this clone warns "Manually-specified variables were not used" for both packages. So the
-    reviewer's relation is the other way round. Suggested: drop the flag from the line and say
-    so; cmake 4 would be its own PR (unpin, new lock, mocap build).
-  - 7: the hook replaces the process-wide threading.excepthook. RaceCommNode's own thread already
-    catches the same exceptions in `_spin`, and ROSConnector uses processes, not threads, so the
-    hook should have nothing to catch (to confirm with a node and Ctrl-C, no hardware). Plan:
-    remove the hook and drop KeyboardInterrupt from `_spin`. Only shutdown output changes.
-  - 8: the client timestamp is used for the worker watchdog (older than 10 control periods) and
-    for debug latency logs, nothing else. The host creates the service and sleeps 1 s without
-    knowing whether the clients finished. In this PR the change is only: delete calibrate_clock
-    and RealCalibrateClock.srv. The replacement (host publishes /clock, client node uses
-    use_sim_time) lands in the client (PR 5), the host (PR 6) and on the integration branch, and
-    has to be flown again. It contradicts "clock calibration is kept as flown" under Settled, so
-    it is the user's decision. Simpler fallback: the worker stamps actions on receipt.
-  - The PR description says "the message package from #102, unchanged" and names
-    `calibrate_clock`; both sentences change with the decisions above.
-- #147 ([Multi-drone 3], client): DRAFT, opened by the user at 14:21, head b312b80, no reviewers
-  requested. It is stacked on #146: two commits (b08c35e, b312b80), +799/-6 in 20 files, of which
-  6 files and +540/-3 are the client's. Its description is the series list plus "Needs #146"; the
-  long version is under "Drafts" at the end of this file.
-  - Of the #146 review only comment 8 reaches the client: it imports calibrate_clock and
-    RealCalibrateClock, calibrates in lock_until_race_start and adds `_clock_offset` to the
-    timestamp (about 10 lines). Comments 1 to 7 do not change client code.
-  - Every new commit on `multi-drone-2-messages` has to be brought into `multi-drone-3-client`.
-    Once #146 is squash-merged: `git rebase --onto upstream/main <last #146 commit>
-    multi-drone-3-client`, which needs a force push to the fork (ask the user then).
+  State on 2026-10-09. The decisions are the user's, taken on 2026-10-08/09 after each comment was
+  checked (builds, local ROS runs on one PC, no hardware); see "Settled" and "Clock".
+  - 2 to 4: done and pushed, d022f81 "Delete unused ROS messages". Action, EpisodeEnd, EpisodeReset,
+    Observations, RaceEnd and StepResult and their CMake entries are gone. No ref imports them. They
+    are byte-identical to rducrist/drone_racing_msgs, written for a simulation stepped over ROS
+    (branch exp/multi-sim on rducrist's fork, never a PR here), and the three with observations
+    still carry `target_gate`, which #121 removed from the observation. The type hashes of
+    RealClientAction and RealHostState are unchanged (compared after a build), and an old and a
+    new install exchanged messages in both directions under Zenoh on one PC.
+  - 7: done and pushed, e2cdddd "Remove excepthook and KeyboardInterrupt handling from
+    RaceCommNode". `_suppress_shutdown_thread_errors` and its call are gone, and `_spin` no longer
+    catches KeyboardInterrupt (Python raises it only in the main thread). 30 local runs (Ctrl-C and
+    normal close, default RMW and Zenoh) printed no traceback. Left as it was: `_spin` still
+    swallows every exception whose class is named RCLError, also while the context is healthy.
+  - 8 and 1: done and pushed on 2026-10-09 (17:45 UTC), d654357 "Replace clock calibration with ROS
+    simulated time". calibrate_clock, RealCalibrateClock.srv and its CMake entry are removed,
+    RaceCommNode takes the keyword-only `use_sim_time: bool = False`, and the module docstring is
+    one line. The package now has two messages and no service. Type hashes unchanged again.
+  - 5 and 6: answered by the user on 2026-10-09 (see above), no code change so far. Open with
+    amacati: whether to pin cmake above 4. That would be its own PR (unpin, new lock, mocap and
+    acados builds in the lab). Facts: cmake is pinned to 3.26.0 in [tool.pixi.dependencies] by #94
+    (ratheron, 2026-06-10). ROS does not forbid cmake 4: Kilted's ament_cmake and rosidl ask for
+    3.20, and the package builds with cmake 4.2.3, 4.3.1 and 4.4.2 (binaries from the pixi cache
+    and a miniconda env). `cmake_minimum_required(VERSION 4.0)` fails under the pin.
+    -DCMAKE_POLICY_VERSION_MINIMUM only exists in cmake >= 4, where the mocap package needs it
+    (vendored vrpn asks for 2.6, pybind11 for 3.4: without the flag cmake 4 stops, with it the
+    build passes). Under 3.26 it is ignored with the warning "Manually-specified variables were
+    not used". So moving to cmake 4 is the case that needs the flag, not the case that allows
+    dropping it. The flag text is the same as on main; the line is in the diff only because of
+    `flock` and `--packages-skip-build-finished`. Also open: whether to change the inherited 3.11
+    to 3.20 (what Kilted's template uses).
+  - Still to do for #146: answer amacati's PR comment and threads 1, 2, 3, 7 and 8, follow up on
+    4, 5 and 6, and update the PR description: "the message package from #102,
+    unchanged", "and `calibrate_clock`" and "The code is as in #102" are no longer true; it should
+    name `use_sim_time` and say that the client of #147 is its caller, link #144 in the series list,
+    and answer the PR 74 question on custom messages (see "Still open"). Lab check still owed on
+    this branch: `pixi run -e deploy mocap` starts; one single-drone lap.
+  - Found on the way, not part of the review and not changed: RaceCommNode.close() does not join
+    the spin thread. A process that exits right after rclpy.shutdown() aborted with "terminate
+    called without an active exception" in 20 of 60 local runs (default RMW) and 26 of 32
+    (Zenoh); with `self._thread.join(timeout=1.0)` before `destroy_node()` in 0 of 92. The host
+    script, the worker processes and the client script all end with close() and rclpy.shutdown().
+    The one-line fix belongs to RaceCommNode.close(), which #146 introduces, so decide before #146
+    is merged. Put to the user on 2026-10-09, not decided.
+  - Also found, inherited from PR 102 and not changed: CMakeLists.txt and package.xml declare
+    std_msgs and builtin_interfaces, which no message uses (a build without them gives the same
+    type hashes).
+- #147 ([Multi-drone 3], client): DRAFT, opened by the user on 2026-10-07, no reviewers requested.
+  It is stacked on #146. Its description is the series list plus "Needs #146"; the long version is
+  under "Drafts" at the end of this file.
+  - Adapted and force-pushed on 2026-10-09 (17:45 UTC; the old head b312b80 is replaced):
+    `multi-drone-3-client` is rebased onto `multi-drone-2-messages` (no conflict). 48f4d02 is the
+    client commit (b312b80 rebased), c52b544 "Use the host clock for client timestamps" is new.
+    Any other clone that still has b312b80 checked out has to reset to the remote branch instead
+    of pulling.
+  - Every further commit on `multi-drone-2-messages` has to be brought into `multi-drone-3-client`
+    again. Once #146 is squash-merged: `git rebase --onto upstream/main <last #146 commit>
+    multi-drone-3-client` (the last #146 commit is d654357 at present).
+  - After the lab test: replace the one-line body of #147 with the text under "Drafts".
+  - Found on the way, inherited from PR 102 and not changed: `lock_until_race_start` raises the
+    race-start TimeoutError without `stop_sending.set()`, so the hold-action thread keeps
+    publishing while close() sends its stop messages, and dies with a traceback when the node is
+    destroyed. The host-ready timeout a few lines above does set it. The fix is one line
+    (`stop_sending.set()` before the raise in `real_race_client_env.py`). Decided by the user on
+    2026-10-09: not fixed for now, #147 stays as it is. Mention it under known limitations in the
+    description of #147, or fix it later in its own change.
+  - Found on the way, not changed: after Ctrl-C the client's close() publishes five stop actions on
+    a context that rclpy's signal handler has already shut down. In a mock with the same statement
+    order the publish raised RCLError every time, so the host got no `controller_stopped` and the
+    later closes were skipped. Not run with the real client; check it in the lab.
+
+- [Multi-drone 4] host: no PR opened yet. Prepared on 2026-10-09 and pushed to the fork: branch
+  `multi-drone-4-host`, one commit 2d416d0 "[Multi-drone 4] Add host and deploy script", stacked on
+  `multi-drone-3-client` (c52b544). Files: lsy_drone_racing/envs/real_race_host_env.py
+  and scripts/multi_deploy_host.py (taken from the integration branch), config/multi_level0.toml and
+  multi_level2.toml (`radio` per drone, return_height_min/max).
+  Differences from the flown host; nothing else differs (checked by diff):
+  1. `/clock` at CLOCK_FREQ = 500 Hz from `init_comm`; `_calibrate_client_clocks`, its call and the
+     srv import are removed (see "Clock").
+  2. Worker `_cleanup`: emergency stop first in `try`, the ROS closes and rclpy.shutdown() in
+     `finally` (F.1).
+  3. Aborted start (F.2): `_race_started` flag, close() publishes it; `host_main_loop` raises
+     RuntimeError when the init barrier is broken; no catch-all `except Exception` in the script.
+  4. Worker init order `tasks = [_init_ros_comm, _init_cf, _init_ros_connector]`, because the
+     calibration's 1 s pause is gone. Claude's choice, not asked for by the user; one line to revert.
+  5. Docstrings: the non-existent `init_pose` parameter removed; `deploy_args` typed and described
+     as the deploy config.
+  Checked on 2026-10-09, after `pixi reinstall -e deploy --locked` on that PC (crazyflow 0.3.2; the
+  real modules import there now): the main() of both scripts, the host, the spawned workers and the
+  clients ran end to end, 18 runs, default RMW and Zenoh, with only `Crazyflie` and `ROSConnector`
+  replaced by fakes. No hardware.
+  - `/clock` holds 500 Hz, also while connect_drones waits and during the race loop. Host and worker
+    nodes are on wall time. No action was stamped 0.0. Watchdog age: median 2 to 16 ms, at most
+    23 ms. A normal race ends with return heights 2.00 and 1.75 and close() publishes
+    race_started=True.
+  - Cleanup: close(emergency_stop=True) comes before the ROS closes (the flown worker did it after
+    them). With ROSConnector.close raising, the stop had already been sent; with Crazyflie.close
+    raising, the ROS closes and rclpy.shutdown() still ran.
+  - Aborted start (one worker cannot connect): RuntimeError, close() publishes race_started=False,
+    exit code 1 with the traceback, the other worker sends its emergency stop, the clients keep
+    waiting.
+  - Client killed with `kill -9`: its worker stops after 104 ms (100 Hz) and 206 ms (50 Hz). The
+    other drone finishes. The host loop does not end (as flown).
+  - Init order, clients started first: with the flown order the worker got the client's queued
+    actions about 90 ms after the race start, the oldest 93 ms old against the 100 ms threshold (no
+    trip, 7 ms of margin). With the new order they arrive before the loop starts and are cleared.
+  - Host main process stopped for 0.5 s: both workers stop their drones 105 to 218 ms later (the
+    consequence documented under "Clock").
+  Found, NOT changed, to decide before the PR is opened:
+  a. Ctrl-C on the host (as flown). rclpy's SIGINT handler invalidates the context before the
+     KeyboardInterrupt is handled, so the first statement of close(), a publish, raises RCLError:
+     the barrier is not aborted, stop_event is not set, no worker is joined, exit code 1. During a
+     race the drones still stop, because the same signal shuts the workers' contexts down and their
+     watchdogs trip. Before the race start the workers stay at the barrier with connected, armed
+     drones and the host hangs. Tested fix: `rclpy.init(signal_handler_options=
+     SignalHandlerOptions.NO)` in scripts/multi_deploy_host.py (clean shutdown, both workers send
+     the emergency stop, exit 0). Untested alternative: `if self._host_state_pub and rclpy.ok():`
+     in close().
+  b. A stop message that reaches the host before connect_drones() raises AttributeError in the
+     callback (`_assigned_return_heights` is still None) and ends the host's spin thread (as flown).
+     New: that thread also publishes `/clock`, so the clock stops too. Fix: create the return
+     events and the height array in `__init__` before `init_comm()`. Not tested.
+  c. The docstring of `crazyflie_process_worker` says SIGINT is ignored. rclpy.init() in run()
+     installs rclpy's own handler afterwards, and that is what stops the drones on Ctrl-C (as
+     flown).
+  d. The worker logs "No command received ... handover control to host" also when the host clock
+     stalls, and it is an emergency stop, not a handover.
+  e. One unexplained emergency stop of a healthy drone: in 1 of 11 runs under the default RMW a
+     client's host clock froze for 200 ms while its actions kept arriving and the host published
+     `/clock` without a gap. It coincided with the late discovery of an extra ROS participant (the
+     test's observer node) on a loaded PC. Not seen in 3 Zenoh runs. A lab test is added under
+     "Clock".
+     Follow-up on 2026-10-09, same PC, fake hardware, real scripts: seen once more under the
+     default RMW, in 1 of 6 races with the CPU saturated (16 busy processes on 16 cores) and one
+     long-lived extra node. About 1 s after the start both clients' host clock froze at the same
+     time, for 329 ms and 222 ms, while the extra node received `/clock` without a gap (largest
+     7.5 ms). Both workers had received nothing from their clients until then; the 100 Hz worker
+     then got 10 queued actions with one stamp, 164 ms old, and stopped its drone. Under Zenoh, 14
+     races without any freeze: 8 with a node joining and leaving every 0.8 s (105 joins, 2 of the
+     races with the CPU saturated) and 6 in exactly the setup that froze under the default RMW;
+     the oldest action a worker saw was 34 ms (50 Hz) and 23 ms (100 Hz). Under the default RMW
+     with joining nodes only: 5 races, 75 joins, no freeze. So far the freeze needs the default RMW
+     and a saturated PC; the lab runs Zenoh since #144. One PC only, small numbers: the lab test
+     stays. Scripts: scratchpad/clock_join_test and scratchpad/host-functional on that PC.
+  f. A second `/clock` publisher whose clock is ahead delays the watchdog by its lead, because the
+     stamps lie in the future. Optional hardening: `abs(...)` around the age in the watchdog.
+  g. In #147, as flown: at the race start the client's first step compiles `gate_passed`, so no
+     action is sent for 58 to 186 ms. On a cold PC the 100 Hz worker (threshold 100 ms) stopped its
+     drone 0.1 s after the start, once. RealRaceCoreEnv compiles the function up front in `_jit`;
+     the client does not.
+  h. rclpy.shutdown() after RaceCommNode.close() was also seen to hang, not only to abort: one
+     more reason for the join in #146.
+  For the description, known and as flown: with the shipped `check_drone_start_pos = true`
+  check_track raises (the drones have no `nominal_pos`); multi_level0.toml has no
+  env.randomizations; the host does not watch its workers and does not end its loop after a client
+  crash. No CI test is possible for the host (the tests env has no ROS, cflib2 or
+  drone_estimators), so the evidence above goes into the description.
 
 ## Settled (user, 2026-10-05/06)
 - Zenoh is taken as PR 102 has it: global for the deploy env, multicast discovery, no router.
@@ -103,12 +240,20 @@ been decided by the user.
   Decided on 2026-10-07 after the review of #144: PR 1 keeps the three variables and has no
   `zenoh-router` task.
 - Ownership: Yuming-Lee24 takes all PRs.
-- Message package: keep the typed `drone_racing_msgs` package vendored in-tree under ros_ws/src, carried
-  over whole and unchanged (all 8 messages and the srv), including the six types that no code uses today.
-  Types that still have no consumer are deleted later, once the design is settled.
+- Message package: the typed `drone_racing_msgs` package stays vendored in-tree under ros_ws/src.
+  Until the review of #146 the plan was to carry it over whole and unchanged (all 8 messages and the
+  srv), including the six types that no code uses, and to delete those later.
+  Changed on 2026-10-09: the six unused types are removed in #146 (d022f81; the user's question to
+  rducrist of 2026-10-08 on that thread is still unanswered), and RealCalibrateClock.srv is removed
+  as well (see "Clock"). The package is now RealClientAction.msg and RealHostState.msg, both
+  unchanged, so their type hashes are the same.
 - No comment on PR 102. The context goes into each PR's description instead.
-- Principle: migrate faithfully first, fix afterwards. Clock calibration is kept as flown, and with it
-  the watchdog that compares against the calibrated client timestamp (the two belong together).
+- Principle: migrate faithfully first, fix afterwards. Until 2026-10-09 that included the clock
+  calibration as flown, together with the watchdog that compares against the calibrated client
+  timestamp.
+  Changed on 2026-10-09: the user follows amacati's comment on #146 and replaces the calibration
+  with ROS simulated time (see "Clock"). The watchdog stays. The principle holds for everything
+  the review does not touch.
 
 Changed on 2026-10-06, after the baseline flights (these replace rev 8):
 - Client design: the client is cut as flown, a standalone env. The subclass design (pluggable drone link
@@ -126,10 +271,131 @@ Changed on 2026-10-06, after the baseline flights (these replace rev 8):
 - Documentation: no docs changes in the individual PRs. All docs are updated together in one PR at
   the end of the series (PR 10 below).
 
+## Clock: /clock replaces the calibration (user, 2026-10-09)
+amacati on #146: "replace the whole calibrate_clock stuff with ROS's built-in /clock topic. The server
+publishes it at 500Hz ... Then all the clients use simulated time, grab their times from ROS, and
+automatically use the master clock." The user decided to do exactly that.
+
+Design:
+- The host main process publishes its wall clock (`time.time_ns()`) as rosgraph_msgs/msg/Clock on
+  `/clock` at 500 Hz, from a timer on its comm node. The publisher is created in `init_comm`, which
+  the constructor calls, so the clock is there before the host waits for clients.
+- The host's and the workers' nodes stay on wall time. A node on simulated time cannot run the
+  timer that publishes the clock (its timers follow `/clock`).
+- The client's comm node is created with `use_sim_time=True`. The client stamps every
+  RealClientAction with that node's clock and waits for a non-zero clock before it sends its first
+  hold action, so every action the worker checks has a valid stamp. One exception: when the clock
+  never arrives, the script's `finally` calls close(), whose five stop messages carry
+  `client_ready` and a stamp of 0.0. The worker does not check the stamp of a stop message.
+- The worker is unchanged: it compares `time.time()` with the stamp and stops its drone when the
+  newest action is older than 10 control periods. Worker and host main process run on one machine.
+- ROSConnector and the estimators are not touched: they run in their own processes on wall time.
+
+Where:
+- #146: done and pushed (see "Review status").
+- #147, lsy_drone_racing/envs/real_race_client_env.py: done and pushed. `_init_comm` passes
+  `use_sim_time=True`; new `_host_time()` reads the node clock; `_send_action_update` stamps with it;
+  `lock_until_race_start` first waits for the host clock (TimeoutError "Timeout waiting for host
+  clock"); the calibration call, `_clock_offset`, `_clock_calib_client` and the srv import are gone.
+- Host PR (PR 6), lsy_drone_racing/envs/real_race_host_env.py: done on `multi-drone-4-host`
+  (2d416d0, pushed, no PR yet; see "Review status"), including the subscription-first order mentioned
+  below. The integration branch is still to do (F.3). What the change is:
+  Remove the RealCalibrateClock import, `_calibrate_client_clocks` and its call in
+  `host_main_loop`, and the calibration sentences in the docstrings. Add (this code ran in a
+  stand-in host on 2026-10-09, default RMW and Zenoh, and held 500 Hz):
+  ```python
+  from rclpy.qos import QoSProfile, ReliabilityPolicy
+  from rosgraph_msgs.msg import Clock
+
+  CLOCK_FREQ = 500.0
+
+  # in init_comm
+  self._clock_pub = node.create_publisher(
+      Clock, "/clock", QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
+  )
+  self._clock_timer = node.create_timer(1 / CLOCK_FREQ, self._publish_clock)
+
+  def _publish_clock(self):
+      """Publish the system time of the host on ``/clock``."""
+      msg = Clock()
+      msg.clock.sec, msg.clock.nanosec = divmod(time.time_ns(), 1_000_000_000)
+      self._clock_pub.publish(msg)
+  ```
+  The QoS is the one rclpy subscribes with. `rosgraph_msgs` comes with rclpy, no new dependency.
+  Mind: `_calibrate_client_clocks` also held the only pause (`time.sleep(1.0)`) between "all clients
+  ready" and the release of the start barrier, and each worker creates its action subscription as
+  its last init task. Without the pause the control loop can start before that subscription has
+  matched. In a stand-in run under the default RMW the worker then got the client's 10 queued
+  messages at once, the oldest 9 periods old against a threshold of 10; no trip, and not seen under
+  Zenoh in one run. When the host PR is cut, create the subscription first
+  (`tasks = [self._init_ros_comm, self._init_cf, self._init_ros_connector]`) or show in the lab
+  that it does not matter.
+- Also on the integration branch then: CLAUDE.md (the sentences on the calibrate_clock service and
+  on the message package being identical to the PR's). Docs, for PR 10: docs/multi_agent/index.md
+  line 67 ("calibrates clocks") and line 93 ("calibrates its clock against the host"), and the
+  `calibrate_clock` service box in docs/img/multi_adr_scheme.svg.
+
+Measured on one PC on 2026-10-08, replica processes, default RMW and Zenoh, no hardware:
+- A 500 Hz timer in rclpy holds 496 to 499 Hz. CPU about 10 % of a core on the host and on each
+  client (100 Hz would be about 3 to 4 %).
+- The client's stamp is behind the host clock by about 1 ms when idle and by 6 ms in the median,
+  16 ms at most, when a Python controller keeps the interpreter busy. The watchdog thresholds are
+  100 ms (100 Hz drone) and 200 ms (50 Hz drone); no false trip in any run.
+- The error only makes actions look older, never newer, as long as there is one publisher.
+- 2026-10-09: the changed client methods, run from their unmodified source in a harness against a
+  stand-in host and worker (the module itself does not import on that PC, whose deploy env is
+  outdated): no hold or control action was stamped 0.0, no backward step, no false trip. Age seen
+  by the watchdog: median 9 to 18 ms, at most 23 ms. A client started before the host waits in
+  "Waiting for host clock" and then runs normally; without a host it raises the TimeoutError.
+
+Known behaviour, to be tested in the lab and accepted or not:
+- If `/clock` stops while actions still arrive (host main process stalls or dies), the client stamps
+  freeze and every worker stops its drone after 10 control periods: an emergency stop of all drones
+  at once. Measured: stopping the publishing process for 0.5 s tripped the check. With the
+  calibration the host main process was not part of that loop.
+- `/clock` is one global topic. Any other publisher on the same ROS graph (a second host with the
+  same ROS_DOMAIN_ID, `ros2 bag play --clock`, a simulator) is applied by the clients without a
+  warning. Run `ros2 topic info /clock -v` in the lab before flying; this is the same question as
+  "Isolation between lab PCs" under "Still open".
+- A client without a host raises TimeoutError after its timeout (120 s in the script). Its close()
+  then still sends the five stop messages with `client_ready` and a stamp of 0.0 (see "Design").
+- Old and new code do not work together: a new client waits for a `/clock` that the as-flown host
+  never publishes (and after 120 s reports ready and stopped through close()), and an as-flown
+  client waits for a calibration service that a new host no longer offers. Update host and clients
+  on every machine in one step.
+- The client's log line "Clock offset = ... ms" is gone; it was the only direct display of the
+  clock difference between the lab PCs. The client's debug log of the host latency
+  (`time.time() - msg.timestamp`) still compares two wall clocks and was not changed.
+
+Lab test before the host PR is opened (the watchdog input changed, so this replaces part of the
+flights of 2026-10-06). It needs F.3 on the integration branch first.
+- The watchdog only runs after the race has started. So start the race with the drones staying on
+  the ground (a controller that does not take off), then:
+  - `kill -9` a client (not Ctrl-C, which sends the stop message instead): its worker has to log
+    "No command received" and stop within about 11 control periods (0.22 s at 50 Hz, 0.11 s at
+    100 Hz);
+  - stop only the host main process (`kill -STOP <pid>`; Ctrl-Z would stop the workers as well):
+    all workers have to stop. `kill -CONT` or kill it afterwards.
+- Start a client without a host: it has to time out. Start the clients first and the host last:
+  the race has to start normally.
+- `ros2 topic info /clock -v` shows exactly one publisher.
+- During a race on the ground, start and stop other ROS participants (`ros2 topic hz /clock`,
+  `ros2 node list`, RViz): no worker may log "No command received". This is finding e under
+  "Review status"; if it happens under Zenoh, the watchdog input has to be discussed with amacati.
+- Watch the first 0.2 s after "Race started" on the 100 Hz drone (finding g): a stop there comes
+  from the client's first step, not from `/clock`.
+- Flights: host + one client, host + two clients, host and clients on two machines. No worker may
+  log "No command received" during a normal flight.
+
 ## Still open (maintainers / lab)
-- amacati's unanswered objection on PR 74 to a ros_ws inside the repo and to custom messages. PR 4's
-  description must address it directly, and must say that six types have no consumer yet and are kept
-  on purpose.
+- amacati's objection on PR 74 to a ros_ws inside the repo and to custom messages ("Do we need these
+  messages? Can't we build them out of existing ones?"). N0OBSTUDENT answered the ros_ws part on
+  2026-04-26 (external repository), ratheron moved the package back in-tree on 2026-06-09; whether
+  custom messages are needed at all was never answered. The posted description of #146 does not
+  address it. With two messages and no service left, the updated description has to.
+- Whether ratheron and rducrist, the requested reviewers of #146, want the six removed simulation
+  types back. They would return with the PR that adds their consumer, with the current observation
+  keys.
 - Isolation between lab PCs under multicast. All machines on the same network with the same
   ROS_DOMAIN_ID share one graph; rmw_zenoh disables multicast by default for this reason. Different
   ROS_DOMAIN_IDs isolate: the id is the first element of every Zenoh key (rmw_zenoh design doc), and a
@@ -140,9 +406,9 @@ Changed on 2026-10-06, after the baseline flights (these replace rev 8):
 
 ## Consequences of not posting on PR 102
 - No freeze of the PR head. Before cutting each PR, check that it is still 7b581ed:
-  `git ls-remote upstream refs/pull/102/head` (unchanged on 2026-10-06).
+  `git ls-remote upstream refs/pull/102/head` (unchanged on 2026-10-06 and on 2026-10-09).
 - Each PR description says which files it ports from #102. No Co-authored-by trailers.
-- amacati has never reviewed PR 102, so PR 4 is the first place he sees the design. Its description needs
+- amacati has never reviewed PR 102, so PR 4 (#146) was the first place he saw the design. Its description still needs
   a short account of the process model (host, one worker per drone, one client per drone), the two
   topics, and why custom messages.
 
@@ -217,10 +483,31 @@ F. Remaining work on the branch.
       returning when the init barrier is broken; no catch-all `except Exception` in the host script.
       Today close() always publishes race_started = true and the script exits 0. A client only starts by
       mistake if it has already finished clock calibration; otherwise it times out after 120 s.
+      With `/clock` instead of the calibration (see "Clock") nothing holds a client back any more: a
+      client that has seen the host ready starts its controller on that message.
+   Not parked, needed for the lab test under "Clock" (suggested steps, 2026-10-09):
+   3. bring the reviewed comm node, client and message package onto the branch from
+      `multi-drone-3-client` (c52b544). A merge or a cherry-pick conflicts, because the branch added
+      the same files on its own; take them by file instead:
+        git checkout origin/multi-drone-3-client -- lsy_drone_racing/utils/ros_race_comm.py \
+            lsy_drone_racing/envs/real_race_client_env.py \
+            ros_ws/src/drone_racing_msgs/CMakeLists.txt tools/setup_mocap.sh
+        git rm ros_ws/src/drone_racing_msgs/srv/RealCalibrateClock.srv \
+            ros_ws/src/drone_racing_msgs/msg/{Action,EpisodeEnd,EpisodeReset,Observations,RaceEnd,StepResult}.msg
+      Then change the host as described under "Clock". Until the host is changed it does not import
+      (it still imports RealCalibrateClock) and cannot run with the new client. Update every lab
+      machine in one step. Existing builds of the message package keep working (same type hashes).
+   Later:
+   4. after #146 is merged: merge upstream/main (pyproject.toml: see #144 under "Review status").
+      The files that F.3 took from the PR branch should merge without a conflict if #146 was merged
+      with the same content; otherwise take upstream's side. Without F.3 the merge conflicts in
+      ros_race_comm.py and CMakeLists.txt (add/add) and in tools/setup_mocap.sh, the six removed
+      .msg files and the .srv survive it and have to be deleted by hand, and host and client no
+      longer import.
    Deferred until after the migration is on main (each its own later PR if wanted):
    - pluggable drone link in the real env; client as a subclass; the gate-index fix of the old PR 1
-   - watchdog on host receive time, which would make calibration optional
-   - calibration: host waits for each client to finish instead of sleeping 1 s
+   - watchdog on host receive time, which needs no clock shared between the machines (looked at on
+     2026-10-08 as the alternative to `/clock`; the user chose `/clock`)
    - arm only after all clients are ready
    - drop the client-side command publish (the host worker already publishes it)
    - reset the "client stopped" flags so the host does not need a restart between attempts
@@ -234,6 +521,8 @@ F. Remaining work on the branch.
   anything that is not on main yet.
 - Claude prepares the branch and the English PR title and description. The user pushes and opens the PR.
 - After a merge: merge upstream/main into the integration branch (no rebase, so lab machines can pull).
+- Review fixes are made on the PR branch first; the integration branch takes them over afterwards
+  (F.3, F.4). For the host PR the content still comes from the integration branch.
 
 ## PR sequence
 Titles (user, 2026-10-06): the six PRs of the migration carry a series tag with an index and no
@@ -245,7 +534,7 @@ series and use plain titles. The numbers on the left are this plan's own and are
    The fix of 292589a plus `test_multi_drone_controllers` in tests/integration/test_controllers.py, which
    runs both controllers of multi_level0.toml as multi_sim.py does. Fails without the fix, passes with
    it. Branch `fix-multi-attitude-controller`, commit 795e8d3, ready on 2026-10-06 (full suite 87 passed,
-   22 skipped; ruff green). No hardware. Open upstream as #143.
+   22 skipped; ruff green). No hardware. Merged upstream as 735437f (#143).
 1. Dropped (gate index of finished drones in real race env). See "Settled".
 2. Deferred until after the migration (pluggable drone link in the real race env).
 3. [Multi-drone 1] Switch deploy env to Zenoh with multicast discovery
@@ -261,6 +550,11 @@ series and use plain titles. The numbers on the left are this plan's own and are
    (added in #128), which rmw_zenoh 0.6.4 does not implement, so mocap is visible across machines.
    The line was left in place for the maintainers to decide.
 4. [Multi-drone 2] Add ROS2 messages and communication node
+   State after the review (2026-10-09, see "Review status"): d022f81, e2cdddd and d654357 pushed.
+   With all three the PR is 7 files, +122/-3: .gitignore, tools/setup_mocap.sh,
+   CMakeLists.txt, package.xml, RealClientAction.msg, RealHostState.msg and ros_race_comm.py
+   (RaceCommNode only). The two messages have the type hashes of PR 102, so existing installs stay
+   compatible. The rest of this entry describes the plan and the PR as it was opened (b08c35e).
    ros_ws/src/drone_racing_msgs unchanged from PR 102 (CMakeLists.txt, package.xml, 8 messages, 1 srv),
    .gitignore, tools/setup_mocap.sh rebuild trigger, lsy_drone_racing/utils/ros_race_comm.py. ~230 lines.
    The package is byte-identical to what lab machines built from the PR branch, so existing installs stay
@@ -284,7 +578,8 @@ series and use plain titles. The numbers on the left are this plan's own and are
      untouched; three and six activations at once all succeed with the lock (without it 11 of 12
      failed with build errors). Tests 86 passed, ruff and docs build green.
    - Still to do in the lab on this branch: `pixi run -e deploy mocap` starts; one single-drone lap.
-   - PR description answers amacati's comment on #74 (2026-04-05): ros_ws is at the repo root and is
+   - The PR description was meant to answer amacati's comment on #74 (2026-04-05); the posted one
+     does not (see "Still open"). The intended answer: ros_ws is at the repo root and is
      the workspace setup_mocap.sh already creates; the package was moved in-tree on #102 by
      ratheron's commits fb33705 and 9ebb375 after an external-repository variant; one typed message
      per direction keeps action, flags and timestamp together.
@@ -297,7 +592,12 @@ series and use plain titles. The numbers on the left are this plan's own and are
    2026-10-07 after the user reviewed the diff in VS Code; it replaces 4cecd87 and differs from it
    only in the unit test.
    Stacked on `multi-drone-2-messages` (b08c35e), because the client imports the messages and the comm
-   node. Once PR 4 is merged upstream: `git rebase --onto upstream/main b08c35e multi-drone-3-client`.
+   node. Once PR 4 is merged upstream: `git rebase --onto upstream/main <last commit of #146>
+   multi-drone-3-client`.
+   Adapted and force-pushed on 2026-10-09 (see "Review status" and "Clock"): rebased onto the reviewed
+   `multi-drone-2-messages`, plus the commit "Use the host clock for client timestamps". The client
+   no longer equals the integration branch: it reads the host clock from `/clock` instead of
+   calibrating. The sentences below describe b312b80.
    - Client env: code identical to the integration branch (AST compared without docstrings). Text
      only: six stale docstrings corrected and one TODO comment removed. Script, registration and
      extract_config_for_rank are byte-identical to the integration branch.
@@ -315,6 +615,8 @@ series and use plain titles. The numbers on the left are this plan's own and are
    Worker, orchestration, pre-flight checks, host script. No docs page (see PR 10).
    Includes the two parked fixes (F.1, F.2). Any number of drones, as flown with two. ~550 lines.
    One flight with failure injection.
+   Since 2026-10-09 also: the host publishes `/clock` and the calibration is removed (F.3, "Clock").
+   That changes the watchdog's input, so the lab test listed under "Clock" comes before this PR.
 7. Dropped (two-drone PR). Two drones come with PR 6 as flown.
 8. [Multi-drone 5] Remove old multi-drone deploy script
    Delete scripts/multi_deploy.py, fix dangling multi_level3.toml references. After PR 6. Decide then
@@ -336,14 +638,11 @@ series and use plain titles. The numbers on the left are this plan's own and are
        startup, which is expected without a router.
    Review risk: the reviewers asked for usage docs together with the code on PR 74. Each PR
    description should say that the docs follow in the last PR of the series.
-9. (Later, once the design is settled) Remove message types without a consumer
-   Delete whichever of Action, EpisodeEnd, EpisodeReset, Observations, RaceEnd and StepResult still have
-   no user, and their CMakeLists entries. (RealCalibrateClock is in use while calibration is kept.)
-   Removing unused types does not change the remaining ones, so machines with an older install keep
-   working without a rebuild.
+9. Dropped on 2026-10-09: the six message types without a consumer are removed in #146 (PR 4), and
+   RealCalibrateClock goes with the calibration.
 
-Order: 0 now. 3 and 4 are independent of each other. 5 needs 3 and 4. 6 needs 5. 8 after 6. 10 (docs)
-after 8. 9 last.
+Order: 0 (#143) and 3 (#144) are merged. 4 (#146) is in review, 5 (#147) is a draft stacked on it.
+6 needs 5 and the lab test under "Clock". 8 after 6. 10 (docs) after 8.
 PRs 3 and 4 are the ones that change what single-drone users run (transport, activation script).
 Everything after adds new files.
 Size caveat: 5 and 6 are larger than anything a non-maintainer has landed here (largest ~+218). Seam if
@@ -352,7 +651,8 @@ reviewers want 6 smaller: worker vs orchestration.
 ## Must be in the host PR
 - Emergency stop first, with the ROS closes in a finally block.
 - Aborted start never publishes race_started; script exits non-zero.
-Everything else in the host is carried over as flown, including clock calibration and the watchdog.
+- The `/clock` publisher instead of the clock calibration (see "Clock"), tested in the lab first.
+Everything else in the host is carried over as flown, including the watchdog.
 
 ## Not carried into any PR
 - lsy_drone_racing/control/testing_race_fast.py, testing_race_slow.py, config/multi_test*.toml.
@@ -364,9 +664,13 @@ Everything else in the host is carried over as flown, including clock calibratio
 No Co-authored-by trailers (user, 2026-10-06). PR descriptions name PR 102 as the source of ported files.
 
 ## Drafts
-### PR description for [Multi-drone 3] (branch `multi-drone-3-client` at b312b80)
-Written on 2026-10-06, before the review of #146. Revise it if comment 8 on #146 (ROS /clock instead
-of calibrate_clock) is taken up: the "What the client does" section and the testing evidence change.
+### PR description for [Multi-drone 3] (branch `multi-drone-3-client`)
+Written on 2026-10-06 for b312b80. Revised on 2026-10-09 for the `/clock` change: "What the client
+does", "Ported from #102" and the last bullet of "Testing". The flights of 2026-10-06 used the
+calibration, so the testing section may only claim them for the rest of the client until the lab
+test under "Clock" is done. The test-suite and import bullets were measured at b312b80: run them
+again on the tip that is posted (the count also changes once the branch sits on a main with #143's
+test).
 
 Title: `[Multi-drone 3] Add client env and deploy script`
 
@@ -399,16 +703,17 @@ The client cannot fly on its own. It needs the host of part 4, which owns the ra
 
 - `reset` reads the track poses from mocap, opens the `ROSConnector` for the estimators of all drones
   and creates the communication node.
-- `lock_until_race_start` publishes a hold action at the control frequency, waits until the host
-  reports ready, calibrates its clock offset against the host and waits for the race start.
+- `lock_until_race_start` waits for the host clock, then publishes a hold action at the control
+  frequency until the host reports ready and starts the race.
 - `step` updates gate progress and sensor-range visibility from the estimator states, checks the
   safety limits and publishes the action as `RealClientAction`.
 - `close` publishes `controller_stopped` and closes the ROS connections.
 
 The client never talks to the drone. The host's worker for this drone forwards the latest action to
-the Crazyflie, returns the drone to its start once the client reports `controller_stopped`, and takes
-over when the newest message is older than ten control periods. That comparison is why the client
-stamps its messages in the host's clock.
+the Crazyflie, returns the drone to its start once the client reports `controller_stopped`, and stops
+the drone when the newest message is older than ten control periods. That comparison is why the
+client stamps its messages with the host's clock: its communication node uses ROS simulated time and
+reads the clock that the host publishes on `/clock` (as suggested in the review of #146).
 
 ## Ported from #102
 
@@ -419,6 +724,7 @@ The env and the script are the ones from #102, adapted to current main:
   `RealRaceCoreEnv`.
 - Hold and stop actions in state mode are 16-D with an identity quaternion.
 - New `dynamics` argument, passed from `config.sim.dynamics`.
+- The clock calibration service of #102 is replaced by the host clock on `/clock`.
 
 Several docstrings that still described earlier versions were corrected.
 
@@ -436,8 +742,10 @@ migration, so that this series stays a port of what was flown.
 - Test suite (87 passed, 22 skipped), `ruff check`, `ruff format --check` and the docs build pass.
 - In the deploy environment the module imports with the built messages, and the env constructs for
   both drones of `multi_level2.toml`.
-- Flown on 2026-10-06 with this client code and the host of part 4: host with one client, host with
-  two clients, and host and clients on two machines.
+- Flown on 2026-10-06 with the host of part 4, still with the clock calibration of #102: host with
+  one client, host with two clients, and host and clients on two machines. The `/clock` path was
+  only exercised without hardware so far: the changed methods against a stand-in host and worker
+  (TODO before leaving draft: replace this with the lab result).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
