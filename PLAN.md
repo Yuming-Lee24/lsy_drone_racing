@@ -228,6 +228,37 @@ been decided by the user.
   crash. No CI test is possible for the host (the tests env has no ROS, cflib2 or
   drone_estimators), so the evidence above goes into the description.
 
+- [Multi-drone 5] cleanup and docs: no PR opened. The user decided on 2026-10-10 to merge the last
+  two PRs of the series (PR 8 and PR 10 below) into one. Committed on the user's PC on 2026-10-10,
+  NOT pushed: branch `multi-drone-5-docs`, one commit 42e3f2b "[Multi-drone 5] Remove old deploy
+  script and document multi-drone real races", stacked on `multi-drone-4-host` (2d416d0), worktree
+  ../lsy_drone_racing_wt_docs.
+  - scripts/multi_deploy.py is deleted. Nothing else referred to it.
+  - docs/multi_agent/index.md and the nav entry in properdocs.yml, from PR 102, corrected: no Zenoh
+    router; `pixi run -e deploy estimator cfXX`; no clock calibration but the host clock on `/clock`
+    and the ten-period watchdog; a note to restart the host before every attempt; a warning not to
+    run a second `/clock` publisher.
+  - docs/img/multi_adr_scheme.svg from PR 102 with two labels changed: the `calibrate_clock`
+    service box is now `/clock`, its tag `service` is now `500 Hz`; the bitmap fallbacks of these
+    two labels are removed. Other labels of the figure are still as in PR 102 and do not match the
+    code: topic names (`lsy_drone_racing/client/cf52/action`, `lsy_drone_racing_client/cf20/action`
+    instead of `lsy_drone_racing/client/drone_<rank>/action`), node names (`lsy_race_worker_1/2`
+    instead of `_0/_1`, `lsy_race_client_1` twice), `RaceHost`, `race_start` and `race_end`.
+  - docs/getting_started/setup.md: unchanged. Claude had added the Zenoh and ROS_DOMAIN_ID note
+    drafted for PR 3; the user removed it on 2026-10-10: not needed here, and another open PR
+    with docs changes is waiting to be merged, so it can be added later. In the docs page the
+    commands use `<config_name>.toml` and `--controller <controller_name>.py` (user,
+    2026-10-10).
+  - Checked: `properdocs build` without warnings (docs env installed in the main clone with
+    --frozen), ruff, 48 unit tests.
+  - Not done, to decide: RealMultiDroneRaceEnv and its registration stay, although no script uses
+    them any more. The commented-out row in docs/challenge/overview.md still links
+    config/multi_level3.toml. benchmarks/sim.py still loads config/multi_level3.toml, and with the
+    name corrected it fails later for another reason (`_reset()` is called without `data`), so the
+    benchmark is broken on main independently of this series; left out of this PR.
+  - The series is now five PRs. The descriptions of #146 and #147 and the draft for the host still
+    say "of 6" and list six items.
+
 ## Settled (user, 2026-10-05/06)
 - Zenoh is taken as PR 102 has it: global for the deploy env, multicast discovery, no router.
   Router-free operation confirmed by the user across two machines in the lab.
@@ -618,6 +649,9 @@ series and use plain titles. The numbers on the left are this plan's own and are
    Since 2026-10-09 also: the host publishes `/clock` and the calibration is removed (F.3, "Clock").
    That changes the watchdog's input, so the lab test listed under "Clock" comes before this PR.
 7. Dropped (two-drone PR). Two drones come with PR 6 as flown.
+8 and 10 are merged into one PR since 2026-10-10 (user): `[Multi-drone 5] Remove old deploy script
+   and document multi-drone real races`, see "Review status". The two entries below are the
+   original plan.
 8. [Multi-drone 5] Remove old multi-drone deploy script
    Delete scripts/multi_deploy.py, fix dangling multi_level3.toml references. After PR 6. Decide then
    whether RealMultiDroneRaceEnv and its registration go too or stay for the deferred refactor.
