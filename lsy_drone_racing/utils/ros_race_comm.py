@@ -30,26 +30,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _suppress_shutdown_thread_errors():
-    """Install a threading.excepthook that silences expected ROS2 shutdown exceptions.
-
-    Replaces the noisy default traceback for :class:`~rclpy.executors.ExternalShutdownException`
-    and :class:`KeyboardInterrupt` in background spin threads with a single DEBUG log line.
-    Any other uncaught thread exception still goes through the default handler.
-    """
-    _original = threading.excepthook
-
-    def _hook(args: threading.ExceptHookArgs) -> None:
-        if args.exc_type in (ExternalShutdownException, KeyboardInterrupt) or (
-            args.exc_type.__name__ == "RCLError"
-        ):
-            logger.debug(f"Thread '{args.thread.name}' stopped (shutdown)")
-        else:
-            _original(args)
-
-    threading.excepthook = _hook
-
-
 def calibrate_clock(client: Client, n: int = 5, timeout: float = 60.0) -> float:
     """Estimate clock offset (host_time - client_time) in seconds via N round-trips.
 
@@ -100,7 +80,6 @@ class RaceCommNode:
 
     def __init__(self, name: str):
         """Initialize and spin the ROS2 node in a background thread."""
-        _suppress_shutdown_thread_errors()
         self.node = rclpy.create_node(name)
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self.node)
@@ -108,7 +87,7 @@ class RaceCommNode:
         def _spin():
             try:
                 self._executor.spin()
-            except (ExternalShutdownException, KeyboardInterrupt):
+            except ExternalShutdownException:
                 logger.debug(f"RaceCommNode '{name}' spin thread stopped")
             except Exception as e:
                 if type(e).__name__ == "RCLError":
