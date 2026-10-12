@@ -7,6 +7,7 @@ import threading
 
 import rclpy
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
+from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.parameter import Parameter
 
 logger = logging.getLogger(__name__)
@@ -36,12 +37,9 @@ class RaceCommNode:
                 self._executor.spin()
             except ExternalShutdownException:
                 logger.debug(f"RaceCommNode '{name}' spin thread stopped")
-            except Exception as e:
-                if type(e).__name__ == "RCLError":
-                    # Raised when the context is shut down while the thread is still spinning
-                    logger.debug(f"RaceCommNode '{name}' spin thread stopped (context invalid)")
-                else:
-                    raise
+            except _rclpy.RCLError:
+                # Raised when the context is shut down while the thread is still spinning
+                logger.debug(f"RaceCommNode '{name}' spin thread stopped (context invalid)")
 
         self._thread = threading.Thread(target=_spin, daemon=True, name=f"spin-{name}")
         self._thread.start()
