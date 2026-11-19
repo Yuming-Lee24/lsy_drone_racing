@@ -14,6 +14,8 @@ check_race_track = true
 check_drone_start_pos = true
 # Lets you practice your controller without putting up gates & obstacles, assumes nominal positions given below.
 real_track_objects = true
+# Stop the drone with the RL brake policy (control/brake_rl.py) before returning to the start.
+brake_rl = false
 
 [[deploy.drones]]
 id = 10

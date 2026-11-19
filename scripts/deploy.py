@@ -50,6 +50,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         dynamics=config.sim.dynamics,
         sensor_range=config.env.sensor_range,
         control_mode=config.env.control_mode,
+        brake_rl=config.deploy.get("brake_rl", False),
     )
     viewer = None
     try:
