@@ -27,6 +27,7 @@ from lsy_drone_racing.control.brake_rl import MIN_HEIGHT, BrakeRL
 from lsy_drone_racing.envs.utils import gate_passed, load_gate_order, load_track
 from lsy_drone_racing.utils.checks import check_drone_start_pos, check_race_track
 from lsy_drone_racing.utils.crazyflie import Crazyflie
+from lsy_drone_racing.utils.flight_recorder import FlightRecorder
 
 if TYPE_CHECKING:
     from crazyflow.dynamics import Dynamics
@@ -84,6 +85,7 @@ class RealRaceCoreEnv:
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
         brake_rl: bool = False,
+        record_dir: str | None = None,
     ):
         """Create a deployable version of the drone racing environment.
 
@@ -98,6 +100,8 @@ class RealRaceCoreEnv:
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
             brake_rl: Stop the drone with the RL brake policy before returning to the start.
+            record_dir: Record the estimated state, commands and flight phases of the whole flight
+                (including brake and return_to_start) to an `.npz` file in this directory.
         """
         assert rclpy.ok(), "ROS2 is not running. Please start ROS2 before creating a deploy env."
         # Static env data
@@ -133,6 +137,20 @@ class RealRaceCoreEnv:
             drone_name=self.drone_name,
         )
         self._ros_connector = ROSConnector(estimator_names=self.drone_names, timeout=10.0)
+        self.recorder = None
+        if record_dir is not None:
+            self.recorder = FlightRecorder(self._ros_connector, self.drone_name, record_dir)
+            self.recorder.meta.update(
+                drone_name=self.drone_name,
+                start_pos=self.drones.pos[rank],
+                pos_limit_low=self.pos_limit_low,
+                pos_limit_high=self.pos_limit_high,
+                return_height=float(self.gates.pos[:, 2].max() + 0.36 + 0.15),
+                brake_rl=brake_rl,
+                freq=freq,
+                control_mode=control_mode,
+                drone_parameters={k: v for k, v in self.drone_parameters.items()},
+            )
         # Dynamic data
         self.data = EnvData.create(
             n_drones=self.n_drones, n_gates=self.n_gates, n_obstacles=self.n_obstacles
@@ -174,6 +192,9 @@ class RealRaceCoreEnv:
 
         self.drone.connect(timeout=10.0)
         self.drone.reset(arm=True)
+        if self.recorder is not None:
+            self.recorder.start()
+            self.recorder.set_phase("race")
 
         return self.obs(), self.info()
 
@@ -183,6 +204,8 @@ class RealRaceCoreEnv:
             self.drone.send_action_attitude(
                 action[:3], action[3], self.drone_parameters, publish_to_ros=True
             )
+            if self.recorder is not None:
+                self.recorder.set_cmd(action[:3], action[3])
         else:
             self.drone.send_action_state(
                 action[:3], action[3:6], action[6:9], action[9:13], action[13:16]
@@ -375,6 +398,8 @@ class RealRaceCoreEnv:
                 return False
             rpy, thrust = self.brake.compute_control(obs)
             self.drone.send_action_attitude(rpy, thrust, self.drone_parameters)
+            if self.recorder is not None:
+                self.recorder.set_cmd(rpy, thrust)
             t_next = max(t_next + 1.0 / freq, time.perf_counter())
             time.sleep(max(0.0, t_next - time.perf_counter()))
         logger.warning("Brake policy did not stop the drone in time, handing over")
@@ -390,14 +415,25 @@ class RealRaceCoreEnv:
         closed while a KeyboardInterrupt is propagating (e.g. Ctrl-C during deployment), the drone
         is emergency-stopped immediately instead of returning to the start position.
         """
+        rec = self.recorder
         try:
+            if rec is not None:
+                out = self.data.last_drone_pos[self.rank]
+                if np.any(out < self.pos_limit_low) or np.any(out > self.pos_limit_high):
+                    rec.event("left_safety_limits")
+                if isinstance(sys.exception(), KeyboardInterrupt):
+                    rec.event("keyboard_interrupt")
             if self.data.taken_off and not isinstance(sys.exception(), KeyboardInterrupt):
                 stopped = False
                 if self.brake is not None:
+                    if rec is not None:
+                        rec.set_phase("brake")
                     try:
                         stopped = self._brake()
                     except Exception:
                         logger.exception("Brake policy failed, handing over to return_to_start")
+                    if rec is not None:
+                        rec.event("brake_stopped" if stopped else "brake_handed_over")
                 obs = self.obs()
                 self.drone.return_to_start(
                     self.drones.pos[self.rank],
@@ -407,13 +443,19 @@ class RealRaceCoreEnv:
                     return_height=self.gates.pos[:, 2].max() + 0.36 + 0.15,
                     # Already stopped: do not fly further along the residual velocity
                     breaking_distance=0.0 if stopped else 1.0,
+                    on_phase=None if rec is None else rec.set_phase,
                 )
         finally:
             try:
                 self.drone.close(emergency_stop=True)
             finally:
-                # Close all ROS connections
-                self._ros_connector.close()
+                try:
+                    if rec is not None:
+                        rec.set_phase("stopped")
+                        rec.stop_and_save()
+                finally:
+                    # Close all ROS connections
+                    self._ros_connector.close()
 
 
 # region Single Drone Env
@@ -451,6 +493,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
         brake_rl: bool = False,
+        record_dir: str | None = None,
     ):
         """Initialize the multi-drone environment.
 
@@ -478,6 +521,8 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
             brake_rl: Stop the drone with the RL brake policy before returning to the start.
+            record_dir: Record the estimated state, commands and flight phases of the whole flight
+                (including brake and return_to_start) to an `.npz` file in this directory.
         """
         super().__init__(
             drones=drones,
@@ -489,6 +534,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
             sensor_range=sensor_range,
             control_mode=control_mode,
             brake_rl=brake_rl,
+            record_dir=record_dir,
         )
 
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[dict, dict]:
@@ -562,6 +608,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
         brake_rl: bool = False,
+        record_dir: str | None = None,
     ):
         """Initialize the multi-drone environment.
 
@@ -576,6 +623,8 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
             brake_rl: Stop the drone with the RL brake policy before returning to the start.
+            record_dir: Record the estimated state, commands and flight phases of the whole flight
+                (including brake and return_to_start) to an `.npz` file in this directory.
         """
         super().__init__(
             drones=drones,
@@ -587,6 +636,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
             sensor_range=sensor_range,
             control_mode=control_mode,
             brake_rl=brake_rl,
+            record_dir=record_dir,
         )
 
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[dict, dict]:

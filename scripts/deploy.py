@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import fire
 import gymnasium
+import numpy as np
 import rclpy
 
 from lsy_drone_racing.envs.race_core import RaceCoreEnv
@@ -27,7 +28,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def main(config: str = "level2.toml", controller: str | None = None, render: bool = False):
+def main(
+    config: str = "level2.toml",
+    controller: str | None = None,
+    render: bool = False,
+    record: bool = False,
+):
     """Deployment script to run the controller on the real drone.
 
     Args:
@@ -35,6 +41,8 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         controller: The name of the controller file in `lsy_drone_racing/control/` or None. If None,
          the controller specified in the config file is used.
         render: Show a live MuJoCo window that mirrors the real race from mocap data.
+        record: Record the flight (state estimate, commands, phases incl. brake and
+            return_to_start) to `logs/flights/flight_<time>.npz`. Also enabled by `deploy.record`.
     """
     rclpy.init()
     config = load_config(Path(__file__).parents[1] / "config" / config)
@@ -51,7 +59,12 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         sensor_range=config.env.sensor_range,
         control_mode=config.env.control_mode,
         brake_rl=config.deploy.get("brake_rl", False),
+        record_dir=str(Path(__file__).parents[1] / "logs" / "flights")
+        if record or config.deploy.get("record", False)
+        else None,
     )
+    if (recorder := env.unwrapped.recorder) is not None:
+        recorder.meta.update(config=config.to_dict(), controller=config.controller.file)
     viewer = None
     try:
         if render:
@@ -100,6 +113,18 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
                 action, next_obs, reward, terminated, truncated, info
             )
             if terminated or truncated or controller_finished:
+                core = env.unwrapped
+                pos = next_obs["pos"]
+                low, high = core.pos_limit_low, core.pos_limit_high
+                if np.any(pos < low) or np.any(pos > high):
+                    logger.warning(
+                        f"Stopped: drone at {np.round(pos, 3)} is outside the safety limits "
+                        f"low {low} / high {high}"
+                    )
+                elif not core.drone.is_connected:
+                    logger.warning("Stopped: lost the connection to the drone")
+                elif controller_finished:
+                    logger.info("Stopped: controller finished")
                 break
             if (dt := (time.perf_counter() - t_loop)) < (1 / config.env.freq):
                 time.sleep(1 / config.env.freq - dt)

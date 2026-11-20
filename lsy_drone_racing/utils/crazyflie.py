@@ -168,8 +168,14 @@ class Crazyflie:
         breaking_duration: float = 3.0,
         return_duration: float = 5.0,
         land_duration: float = 3.0,
+        on_phase: Callable[[str], None] | None = None,
     ) -> None:
-        """Return to a start position using the high-level commander."""
+        """Return to a start position using the high-level commander.
+
+        `on_phase` is called with "rth_break", "rth_return" and "rth_land" as each segment starts.
+        """
+        if on_phase is None:
+            on_phase = lambda _: None  # noqa: E731
         self._run(self._prepare_high_level)
 
         def wait_for_action(duration: float) -> None:
@@ -186,15 +192,18 @@ class Crazyflie:
         if vel_norm > 1e-6:
             break_pos += initial_obs["vel"] / vel_norm * breaking_distance
         break_pos[2] = return_height
+        on_phase("rth_break")
         self._run(self._go_to, break_pos, 0.0, breaking_duration)
         wait_for_action(breaking_duration)
 
         return_pos = return_pos.copy()
         return_pos[2] = return_height
+        on_phase("rth_return")
         self._run(self._go_to, return_pos, 0.0, return_duration)
         wait_for_action(return_duration)
 
         return_pos[2] = 0.05
+        on_phase("rth_land")
         self._run(self._go_to, return_pos, 0.0, land_duration)
         wait_for_action(land_duration)
 
