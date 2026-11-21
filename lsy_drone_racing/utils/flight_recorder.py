@@ -2,6 +2,8 @@
 
 A background thread samples the `ROSConnector` estimate at a fixed rate, so the recording also
 covers the parts of the flight that run outside the env's step loop (RL brake, return_to_start).
+Optionally, `onboard` supplies the latest firmware log values (battery voltage, thrust, motor
+outputs; see `Crazyflie.start_onboard_log`), which are sampled alongside.
 Analyze recordings with `scripts/analyze_flight.py`.
 """
 
@@ -18,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from drone_estimators.ros import ROSConnector
     from numpy.typing import NDArray
 
@@ -43,6 +47,8 @@ class FlightRecorder:
         self.meta: dict[str, Any] = {}
         self.phase = "idle"
         self.cmd = np.full(4, np.nan)  # [roll, pitch, yaw] in rad, collective thrust in N
+        self.onboard: Callable[[], dict[str, float]] | None = None
+        self.onboard_names: list[str] = []
         self._rows: list[tuple] = []
         self._events: list[tuple[float, str]] = []
         self._stop = threading.Event()
@@ -88,8 +94,12 @@ class FlightRecorder:
             if pos is not None:
                 with self._lock:
                     phase, cmd = self.phase, self.cmd.copy()
+                ob = self.onboard() if self.onboard is not None else {}
+                onboard = np.array([ob.get(n, np.nan) for n in self.onboard_names], dtype=float)
+                onboard_t = float(ob.get("t_ms", np.nan)) / 1000
                 t = time.perf_counter() - self._t0
-                self._rows.append((t, est_time, pos, quat, vel, ang_vel, cmd, phase))
+                row = (t, est_time, pos, quat, vel, ang_vel, cmd, phase, onboard, onboard_t)
+                self._rows.append(row)
             t_next = max(t_next + 1.0 / self.freq, time.perf_counter())
             self._stop.wait(max(0.0, t_next - time.perf_counter()))
 
@@ -103,7 +113,7 @@ class FlightRecorder:
         if not self._rows:
             logger.warning("Flight recorder captured no samples")
             return None
-        t, est_time, pos, quat, vel, ang_vel, cmd, phase = zip(*self._rows)
+        t, est_time, pos, quat, vel, ang_vel, cmd, phase, onboard, onboard_t = zip(*self._rows)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         path = self.out_dir / f"flight_{datetime.now():%Y%m%d_%H%M%S}.npz"
         np.savez(
@@ -116,6 +126,9 @@ class FlightRecorder:
             ang_vel=np.array(ang_vel),
             cmd=np.array(cmd),
             phase=np.array(phase),
+            onboard=np.array(onboard).reshape(len(t), len(self.onboard_names)),
+            onboard_names=np.array(self.onboard_names, dtype=str),
+            onboard_t=np.array(onboard_t),
             event_t=np.array([e[0] for e in self._events]),
             event_name=np.array([e[1] for e in self._events]),
             meta=json.dumps(self.meta, default=_to_json),

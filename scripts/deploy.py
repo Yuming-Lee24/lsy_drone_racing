@@ -42,7 +42,8 @@ def main(
          the controller specified in the config file is used.
         render: Show a live MuJoCo window that mirrors the real race from mocap data.
         record: Record the flight (state estimate, commands, phases incl. brake and
-            return_to_start) to `logs/flights/flight_<time>.npz`. Also enabled by `deploy.record`.
+            return_to_start, battery voltage and motor outputs from the firmware) to
+            `logs/flights/flight_<time>.npz`. Also enabled by `deploy.record`.
     """
     rclpy.init()
     config = load_config(Path(__file__).parents[1] / "config" / config)

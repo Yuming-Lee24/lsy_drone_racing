@@ -100,8 +100,9 @@ class RealRaceCoreEnv:
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
             brake_rl: Stop the drone with the RL brake policy before returning to the start.
-            record_dir: Record the estimated state, commands and flight phases of the whole flight
-                (including brake and return_to_start) to an `.npz` file in this directory.
+            record_dir: Record the estimated state, commands, flight phases and firmware logs
+                (battery voltage, thrust, motor outputs) of the whole flight (including brake and
+                return_to_start) to an `.npz` file in this directory.
         """
         assert rclpy.ok(), "ROS2 is not running. Please start ROS2 before creating a deploy env."
         # Static env data
@@ -193,6 +194,11 @@ class RealRaceCoreEnv:
         self.drone.connect(timeout=10.0)
         self.drone.reset(arm=True)
         if self.recorder is not None:
+            try:
+                self.recorder.onboard_names = self.drone.start_onboard_log()
+                self.recorder.onboard = lambda: self.drone.onboard_log
+            except Exception:
+                logger.exception("Starting the onboard log failed, recording without it")
             self.recorder.start()
             self.recorder.set_phase("race")
 
@@ -521,8 +527,9 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
             brake_rl: Stop the drone with the RL brake policy before returning to the start.
-            record_dir: Record the estimated state, commands and flight phases of the whole flight
-                (including brake and return_to_start) to an `.npz` file in this directory.
+            record_dir: Record the estimated state, commands, flight phases and firmware logs
+                (battery voltage, thrust, motor outputs) of the whole flight (including brake and
+                return_to_start) to an `.npz` file in this directory.
         """
         super().__init__(
             drones=drones,
@@ -623,8 +630,9 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
             brake_rl: Stop the drone with the RL brake policy before returning to the start.
-            record_dir: Record the estimated state, commands and flight phases of the whole flight
-                (including brake and return_to_start) to an `.npz` file in this directory.
+            record_dir: Record the estimated state, commands, flight phases and firmware logs
+                (battery voltage, thrust, motor outputs) of the whole flight (including brake and
+                return_to_start) to an `.npz` file in this directory.
         """
         super().__init__(
             drones=drones,

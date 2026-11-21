@@ -1,5 +1,9 @@
 """Test controller that deliberately flies out of the safety limits at full speed.
 
+With `mode = "thrust_test"` it instead measures the real maximum thrust: a short vertical burst at
+full PWM from hover, after which the drone hovers again and the controller finishes. The vertical
+acceleration during the burst (see `scripts/analyze_flight.py`) gives T_max = m (a + g).
+
 Use it to test how the drone recovers once it leaves the safety box (`env.track.safety_limits`):
 leaving the box terminates the episode, and `RealRaceCoreEnv.close` then runs the RL brake (if
 `deploy.brake_rl = true`) followed by `Crazyflie.return_to_start`. `scripts/sim_boundary_rush.py`
@@ -11,6 +15,8 @@ Phases:
     rush     Saturate the thrust along `direction` (the drone tilts as far as the thrust budget
              and MAX_TILT allow, while holding the height and the line). With `max_speed`, the
              acceleration stops once that speed is reached.
+    burst    (thrust_test) Level attitude at full thrust for `burst_duration`, then hover again
+             for BURST_HOVER seconds and finish (return_to_start lands the drone).
 
 Optional config section (all keys optional):
 
@@ -19,9 +25,12 @@ Optional config section (all keys optional):
     direction = [-1, 0]   # Horizontal rush direction (normalized)
     max_speed = 0.0       # Speed cap in m/s, 0 means no cap (accelerate until leaving the box)
     thrust_frac = 0.9     # Fraction of the maximum collective thrust used during the rush
+    mode = "rush"         # "rush" or "thrust_test"
+    burst_duration = 0.15 # Full-thrust burst in s (thrust_test). With T/W 2.8 the drone climbs
+                          # about 0.6 m, so keep 1 m of headroom above `height`
 
 Usage:
-    python scripts/deploy.py --controller boundary_rush.py
+    python scripts/deploy.py --controller boundary_rush.py --record
     python scripts/sim_boundary_rush.py
 """
 
@@ -47,6 +56,7 @@ TAKEOFF_DURATION = 3.0
 HOVER_DURATION = 2.0
 RUSH_TIMEOUT = 3.0
 RUSH_ACC = 100.0  # Requested along-track acceleration; always saturated by the thrust budget
+BURST_HOVER = 3.0  # Hover time after the thrust-test burst in s
 
 
 def acc_to_attitude(
@@ -100,6 +110,10 @@ class BoundaryRush(Controller):
         self.max_speed = float(cfg.get("max_speed", 0.0))
         thrust_frac = float(cfg.get("thrust_frac", 0.9))
         self.thrust_max = 4 * float(params["thrust_max"]) * thrust_frac
+        self.thrust_full = 4 * float(params["thrust_max"])  # Maps to pwm_max on the drone
+        self.mode = str(cfg.get("mode", "rush"))
+        assert self.mode in ("rush", "thrust_test"), f"Unknown boundary_rush mode {self.mode}"
+        self.burst_duration = float(cfg.get("burst_duration", 0.15))
 
         self.start = np.asarray(obs["pos"], dtype=np.float64).copy()
         self.hover_pos = self.start.copy()
@@ -121,7 +135,14 @@ class BoundaryRush(Controller):
         pos = np.asarray(obs["pos"], dtype=np.float64)
         vel = np.asarray(obs["vel"], dtype=np.float64)
         t_rush = t - TAKEOFF_DURATION - HOVER_DURATION
-        if t_rush < 0:  # Takeoff and hover: track the minimum-jerk reference
+        if self.mode == "thrust_test" and 0 <= t_rush < self.burst_duration:
+            if not self.rush_logged:
+                logger.info(f"Thrust burst started at {pos.round(2)}")
+                self.rush_logged = True
+            return np.array([0.0, 0.0, 0.0, self.thrust_full], dtype=np.float32)
+        if t_rush < 0 or self.mode == "thrust_test":  # Track the hover reference
+            if t_rush > self.burst_duration + BURST_HOVER:
+                self.finished = True
             p, v, a = min_jerk(self.start, self.hover_pos, t, TAKEOFF_DURATION)
             e = p - pos
             self.i_error = np.clip(self.i_error + e / self.freq, -0.4, 0.4)

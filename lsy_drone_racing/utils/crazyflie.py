@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 __all__ = ["Crazyflie"]
 
 _POWER_CYCLE_BOOT_WAIT = 3.0  # 3 seconds is sufficient for a reboot
+# Firmware log variables for flight recordings: battery voltage, the collective thrust the
+# controller requests, the motor outputs and, with bidirectional DShot, the measured motor RPM
+ONBOARD_LOG_VARS = (
+    "pm.vbat",
+    "stabilizer.thrust",
+    *(f"motor.m{i}" for i in range(1, 5)),
+    *(f"rpm.m{i}" for i in range(1, 5)),
+)
+_LOG_TYPE_BYTES = {"u8": 1, "i8": 1, "u16": 2, "i16": 2, "f16": 2, "u32": 4, "i32": 4, "f32": 4}
+_LOG_BLOCK_BYTES = 26  # Payload limit of one log block
 
 
 class Crazyflie:
@@ -75,6 +85,8 @@ class Crazyflie:
         self._loop_thread: threading.Thread | None = None
         self._estimator_stop_event: Event | None = None
         self._estimator_future: Future[None] | None = None
+        self._onboard_log: dict[str, float] = {}
+        self._onboard_tasks: list[asyncio.Task] = []
 
     @classmethod
     def from_radio(
@@ -118,6 +130,24 @@ class Crazyflie:
         if arm:
             self._run(self._arm)
             self._run(self._unlock_thrust)
+
+    def start_onboard_log(
+        self, names: tuple[str, ...] = ONBOARD_LOG_VARS, period_ms: int = 10
+    ) -> list[str]:
+        """Stream firmware log variables in the background (call after `connect`).
+
+        The latest values, plus the firmware timestamp `t_ms`, are available from `onboard_log`.
+        Variables missing in the firmware are skipped.
+
+        Returns:
+            The names of the logged variables.
+        """
+        return self._run(self._start_onboard_log, names, period_ms)
+
+    @property
+    def onboard_log(self) -> dict[str, float]:
+        """Latest values of the variables streamed by `start_onboard_log`."""
+        return dict(self._onboard_log)
 
     def send_external_pose(self) -> None:
         """Send an external mocap pose to the Crazyflie estimator."""
@@ -236,6 +266,9 @@ class Crazyflie:
                     self._estimator_future.result(timeout=max(1.0, 2 / self.update_freq))
                 except Exception as exc:
                     logger.warning(f"Stopping estimator updater failed: {exc}")
+            for task in self._onboard_tasks:
+                self._loop.call_soon_threadsafe(task.cancel)
+            self._onboard_tasks = []
             if self._cf is not None:
                 self._run(self._disconnect)
         finally:
@@ -378,6 +411,40 @@ class Crazyflie:
                 logger.error(f"Updating estimator of {self.uri} failed: {exc}")
             next_tick += period
             await asyncio.sleep(max(0.0, next_tick - asyncio.get_running_loop().time()))
+
+    async def _start_onboard_log(self, names: tuple[str, ...], period_ms: int) -> list[str]:
+        log = self.cf.log()
+        available = set(log.names())
+        if missing := [n for n in names if n not in available]:
+            logger.warning(f"Firmware has no log variables {missing}, skipping them")
+        names = [n for n in names if n in available]
+        blocks, size = [], _LOG_BLOCK_BYTES
+        for name in names:
+            n_bytes = _LOG_TYPE_BYTES.get(log.get_type(name), 4)
+            if size + n_bytes > _LOG_BLOCK_BYTES:
+                blocks.append([])
+                size = 0
+            blocks[-1].append(name)
+            size += n_bytes
+        for block_names in blocks:
+            block = await log.create_block()
+            for name in block_names:
+                await block.add_variable(name)
+            stream = await block.start(period_ms)
+            self._onboard_tasks.append(asyncio.create_task(self._read_log(stream)))
+        return names
+
+    async def _read_log(self, stream: Any) -> None:
+        while True:
+            try:
+                data = await stream.next()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"Onboard log of {self.uri} stopped: {exc}")
+                return
+            self._onboard_log.update(data.data)
+            self._onboard_log["t_ms"] = float(data.timestamp)
 
     async def _send_attitude_setpoint(
         self, roll: float, pitch: float, yaw_rate: float, thrust: int
