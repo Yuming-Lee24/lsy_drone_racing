@@ -18,6 +18,11 @@ from lsy_drone_racing.envs.race_core import (
 )
 from lsy_drone_racing.rl_training.environment import scale_action
 from lsy_drone_racing.rl_training.level3_algorithm import Level3RolloutBatch
+from lsy_drone_racing.rl_training.level3_level_replay import (
+    initialize_level_replay,
+    sample_level_replay,
+    update_level_replay,
+)
 from lsy_drone_racing.rl_training.level3_observations import (
     ActorObservation,
     CriticObservation,
@@ -74,6 +79,7 @@ class Level3RunnerState:
     episode_start_progress: Array
     episode_start_kind: Array
     rng: Array
+    level_replay: Any
 
 
 @struct.dataclass
@@ -105,6 +111,7 @@ class Level3RolloutMetrics:
     speed: Array
     episode_components: Array
     episode_length: Array
+    replayed: Array
 
 
 @struct.dataclass
@@ -241,11 +248,16 @@ def initialize_level3_runner(
         episode_start_progress=episode_start_progress,
         episode_start_kind=episode_start_kind,
         rng=jax.random.key(seed),
+        level_replay=initialize_level_replay(data, config.level_replay, seed),
     )
 
 
 def _build_level3_environment_step(
-    env: VecDroneRaceEnv, config: Level3PPOConfig, *, mixed_segment: bool
+    env: VecDroneRaceEnv,
+    config: Level3PPOConfig,
+    *,
+    mixed_segment: bool,
+    level_replay: bool = False,
 ) -> Callable[[Level3RunnerState, Array], Level3EnvironmentTransition]:
     """Build the pure transition used inside rollout and evaluation scans."""
     apply_action = env.build_apply_action_fn()
@@ -286,10 +298,15 @@ def _build_level3_environment_step(
         episode_start_progress: Array,
         episode_start_kind: Array,
         memory: Level3ObservationMemory,
-    ) -> tuple[EnvData, Array, Array, Array, Array, Array]:
-        def perform_reset(value: tuple) -> tuple[EnvData, Array, Array, Array, Array, Array]:
-            current_data, reset_mask, current_start, current_kind, current_memory = value
+        replay_state: Any,
+    ) -> tuple[EnvData, Array, Array, Array, Array, Array, Any]:
+        def perform_reset(value: tuple) -> tuple[EnvData, Array, Array, Array, Array, Array, Any]:
+            current_data, reset_mask, current_start, current_kind, current_memory, replay = value
             reset_data, _ = reset_environment(current_data, seed=None, mask=reset_mask)
+            if level_replay:
+                reset_data, replay = sample_level_replay(
+                    replay, reset_data, reset_mask, config.level_replay
+                )
             original_reset_belief = belief_observation(reset_data)
             reset_data, reset_start, reset_kind = apply_level3_segment_reset(
                 reset_data, config, reset_mask, mixed_segment=mixed_segment
@@ -325,6 +342,7 @@ def _build_level3_environment_step(
                     reset_nominal_obstacles_pos,
                     current_memory.nominal_obstacles_pos,
                 ),
+                replay,
             )
 
         return jax.lax.cond(
@@ -337,8 +355,9 @@ def _build_level3_environment_step(
                 value[4].nominal_gates_pos,
                 value[4].nominal_gates_quat,
                 value[4].nominal_obstacles_pos,
+                value[5],
             ),
-            (data, done, episode_start_progress, episode_start_kind, memory),
+            (data, done, episode_start_progress, episode_start_kind, memory, replay_state),
         )
 
     def transition(carry: Level3RunnerState, action: Array) -> Level3EnvironmentTransition:
@@ -354,6 +373,16 @@ def _build_level3_environment_step(
         sequence_length = terminal_belief["gate_sequence"].shape[-1]
         success = terminal_belief["n_gates_passed"] >= sequence_length
         done = base_terminated | base_truncated | success
+        replay_state = carry.level_replay
+        if level_replay:
+            replay_state = update_level_replay(
+                replay_state,
+                terminal_data,
+                done,
+                terminal_belief["n_gates_passed"],
+                sequence_length,
+                config.level_replay,
+            )
         (
             next_data,
             next_episode_start_progress,
@@ -361,12 +390,14 @@ def _build_level3_environment_step(
             reset_nominal_gates_pos,
             reset_nominal_gates_quat,
             reset_nominal_obstacles_pos,
+            next_replay_state,
         ) = reset_done(
             terminal_data,
             done,
             carry.episode_start_progress,
             carry.episode_start_kind,
             carry.observation_memory,
+            replay_state,
         )
         next_belief = belief_observation(next_data)
         next_actual = true_observation(next_data)
@@ -432,6 +463,7 @@ def _build_level3_environment_step(
                 episode_start_progress=next_episode_start_progress,
                 episode_start_kind=next_episode_start_kind,
                 rng=carry.rng,
+                level_replay=next_replay_state,
             ),
             terminal_actor_observation=terminal_actor,
             terminal_critic_observation=terminal_critic,
@@ -489,6 +521,7 @@ def _build_level3_environment_step(
                 speed=jnp.linalg.norm(terminal_actual["vel"], axis=-1),
                 episode_components=reward_transition.completed_components,
                 episode_length=reward_transition.completed_length,
+                replayed=reward_transition.done & (carry.level_replay.episode_slot >= 0),
             ),
         )
 
@@ -500,7 +533,12 @@ def make_level3_functional_step(
 ) -> Callable[[Level3RunnerState, Array], Level3EnvironmentTransition]:
     """Compile a policy-free Level 3 transition for mathematical integration tests."""
     return jax.jit(
-        _build_level3_environment_step(env, config, mixed_segment=config.segment_reset.enabled)
+        _build_level3_environment_step(
+            env,
+            config,
+            mixed_segment=config.segment_reset.enabled,
+            level_replay=config.level_replay.enabled,
+        )
     )
 
 
@@ -513,7 +551,10 @@ def make_level3_rollout_collector(
 ) -> Callable[[Level3RunnerState, Any, Array], tuple[Level3RunnerState, Any, Any]]:
     """Compile policy, simulation, observation, reward, reset, and bootstrap in one scan."""
     environment_transition = _build_level3_environment_step(
-        env, config, mixed_segment=config.segment_reset.enabled
+        env,
+        config,
+        mixed_segment=config.segment_reset.enabled,
+        level_replay=config.level_replay.enabled,
     )
 
     def collect(
@@ -613,6 +654,9 @@ def summarize_level3_rollout(metrics: Level3RolloutMetrics) -> dict[str, Array]:
         "completed_difficulty": jnp.sum(metrics.difficulty) / denominator,
         "current_gate_visited_step_rate": jnp.mean(metrics.current_gate_visited),
         "unsafe_near_plane_stall_step_rate": jnp.mean(metrics.unsafe_near_plane_stall),
+        "level_replay/replayed_fraction": jnp.sum(metrics.replayed) / denominator,
+        "level_replay/fresh_success_rate": jnp.sum(metrics.success & ~metrics.replayed)
+        / jnp.maximum(jnp.sum(metrics.done & ~metrics.replayed), 1),
     }
     summary.update(
         {

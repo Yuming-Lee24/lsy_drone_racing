@@ -131,6 +131,65 @@ class Level3V10RewardCoefficients(Level3V9RewardCoefficients):
 
 
 @dataclass(frozen=True)
+class Level3V13RewardCoefficients(Level3V10RewardCoefficients):
+    """V10 with the soft speed limit raised to 2.2 m/s and a larger time penalty."""
+
+    speed_limit: float = 2.2
+    time: float = 0.03
+
+
+@dataclass(frozen=True)
+class Level3V14RewardCoefficients(Level3V13RewardCoefficients):
+    """V13 with the soft speed limit raised to 3.0 m/s and a larger time penalty."""
+
+    speed_limit: float = 3.0
+    time: float = 0.2
+
+
+@dataclass(frozen=True)
+class Level3V15RewardCoefficients(Level3V14RewardCoefficients):
+    """V14 with the soft speed limit raised to 4.0 m/s."""
+
+    speed_limit: float = 4.0
+    time: float = 0.3
+
+
+@dataclass(frozen=True)
+class Level3V16RewardCoefficients(Level3V15RewardCoefficients):
+    """V15 with the soft speed limit raised to 5.0 m/s and a lap-time-dominant time penalty."""
+
+    speed_limit: float = 5.0
+    time: float = 0.8
+
+
+@dataclass(frozen=True)
+class Level3V17RewardCoefficients(Level3V16RewardCoefficients):
+    """V16 with a time penalty large enough to trade a small success loss for lap time."""
+
+    speed_limit: float = 6.0
+    time: float = 2.0
+
+
+@dataclass(frozen=True)
+class Level3V18RewardCoefficients(Level3V17RewardCoefficients):
+    """V17 with a smaller time penalty to recover reliability at sprint speed."""
+
+    time: float = 1.0
+
+
+@dataclass(frozen=True)
+class LevelReplayConfig:
+    """Training-only prioritized replay of failed track layouts."""
+
+    enabled: bool = False
+    buffer_size: int = 4096
+    replay_probability: float = 0.5
+    temperature: float = 0.5
+    staleness_coef: float = 0.1
+    score_ema: float = 0.5
+
+
+@dataclass(frozen=True)
 class SegmentResetConfig:
     """Static mixed-start distribution used only by Level 3 training collectors."""
 
@@ -242,6 +301,7 @@ class Level3PPOConfig:
     geometry: SafetyGeometry = SafetyGeometry()
     reward: Level3RewardCoefficients = Level3RewardCoefficients()
     segment_reset: SegmentResetConfig = SegmentResetConfig()
+    level_replay: LevelReplayConfig = LevelReplayConfig()
     allow_policy_initialization: bool = False
 
     @property
@@ -353,6 +413,13 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v10_full",
     "level3_v11_explore",
     "level3_v12_refine",
+    "level3_v13_fast",
+    "level3_v14_faster",
+    "level3_v15_race",
+    "level3_v16_lap",
+    "level3_v17_sprint",
+    "level3_v18_refine",
+    "level3_v18_plr",
     "level3_v3_reward",
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
@@ -461,6 +528,72 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             max_grad_norm=2.0,
             curriculum=False,
             reward=Level3V10RewardCoefficients(),
+        )
+    elif name == "level3_v13_fast":
+        config = Level3PPOConfig(
+            profile="level3_v13_fast",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V13RewardCoefficients(),
+        )
+    elif name == "level3_v14_faster":
+        config = Level3PPOConfig(
+            profile="level3_v14_faster",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V14RewardCoefficients(),
+        )
+    elif name == "level3_v15_race":
+        config = Level3PPOConfig(
+            profile="level3_v15_race",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V15RewardCoefficients(),
+        )
+    elif name == "level3_v16_lap":
+        config = Level3PPOConfig(
+            profile="level3_v16_lap",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            gamma=0.997,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V16RewardCoefficients(),
+        )
+    elif name == "level3_v17_sprint":
+        config = Level3PPOConfig(
+            profile="level3_v17_sprint",
+            learning_rate_start=2e-4,
+            learning_rate_end=2e-5,
+            entropy_coef=0.001,
+            gamma=0.998,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V17RewardCoefficients(),
+        )
+    elif name in ("level3_v18_refine", "level3_v18_plr"):
+        config = Level3PPOConfig(
+            profile=name,
+            learning_rate_start=5e-5,
+            learning_rate_end=1e-5,
+            entropy_coef=0.001,
+            gamma=0.998,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V18RewardCoefficients(),
+            level_replay=LevelReplayConfig(enabled=name == "level3_v18_plr"),
         )
     elif name == "level3_v3_reward":
         config = Level3PPOConfig(

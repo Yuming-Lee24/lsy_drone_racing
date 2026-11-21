@@ -573,3 +573,75 @@ def test_level3_segment_masked_reset_and_exact_runner_resume(tmp_path: Path):
         jax.random.key_data(restored_runner.rng), jax.random.key_data(transition.next_runner.rng)
     )
     env.close()
+
+
+@pytest.mark.integration
+def test_level3_level_replay_scores_inserts_and_replays_failed_layouts():
+    from lsy_drone_racing.rl_training.level3_config import LevelReplayConfig
+    from lsy_drone_racing.rl_training.level3_level_replay import (
+        sample_level_replay,
+        update_level_replay,
+    )
+
+    replay_config = LevelReplayConfig(enabled=True, buffer_size=8, replay_probability=1.0)
+    config = get_level3_profile("level3_v18_plr").with_overrides(
+        device="cpu", num_envs=4, num_steps=2, total_timesteps=8, level_replay=replay_config
+    )
+    env = create_level3_environment(config)
+    runner = initialize_level3_runner(env, config)
+    state, data = runner.level_replay, runner.environment_data
+    assert not state.valid.any() and (state.episode_slot == -1).all()
+
+    done = jnp.ones(4, dtype=bool)
+    state = update_level_replay(state, data, done, jnp.asarray([0, 2, 4, 4]), 4, replay_config)
+    assert int(state.valid.sum()) == 4
+    np.testing.assert_allclose(np.sort(np.asarray(state.score[state.valid])), [0, 0, 0.5, 1])
+    slot = int(jnp.argmax(state.score))
+    np.testing.assert_allclose(state.tracks["gates_pos"][slot], data.gates_pos[0])
+    np.testing.assert_allclose(
+        state.tracks["nominal_obstacles_pos"][slot], data.nominal_obstacles_pos[0]
+    )
+
+    state = update_level_replay(state, data, done, jnp.asarray([1, 1, 1, 4]), 4, replay_config)
+    assert int(state.valid.sum()) == 8
+    state = update_level_replay(state, data, done, jnp.asarray([3, 3, 4, 4]), 4, replay_config)
+    assert int(state.valid.sum()) == 8
+    assert float(state.score.min()) == pytest.approx(0.0)
+    assert int((state.score == 0.75).sum()) == 3
+
+    reset_data, _ = env._reset(data, seed=3)
+    replayed_data, sampled = sample_level_replay(state, reset_data, done, replay_config)
+    slots = np.asarray(sampled.episode_slot)
+    assert (slots >= 0).all() and np.asarray(sampled.valid)[slots].all()
+    np.testing.assert_allclose(replayed_data.gates_pos, state.tracks["gates_pos"][slots])
+    np.testing.assert_allclose(replayed_data.gates_quat, state.tracks["gates_quat"][slots])
+    drone_xy = replayed_data.sim_data.states.pos[:, :, None, :2]
+    expected_visited = (
+        jnp.linalg.norm(drone_xy - replayed_data.gates_pos[:, None, :, :2], axis=-1)
+        < replayed_data.sensor_range
+    )
+    np.testing.assert_array_equal(replayed_data.gates_visited, expected_visited)
+    assert (np.asarray(sampled.last_sampled)[slots] == int(state.clock)).all()
+
+    before = np.asarray(sampled.score)[slots[0]]
+    finished = jnp.asarray([True, False, False, False])
+    rescored = update_level_replay(
+        sampled, replayed_data, finished, jnp.full(4, 4), 4, replay_config
+    )
+    assert float(rescored.score[slots[0]]) == pytest.approx(0.5 * before)
+
+    no_replay = replace(replay_config, replay_probability=0.0)
+    kept_data, kept = sample_level_replay(state, reset_data, done, no_replay)
+    np.testing.assert_allclose(kept_data.gates_pos, reset_data.gates_pos)
+    assert (kept.episode_slot == -1).all()
+    env.close()
+
+
+@pytest.mark.integration
+def test_level3_level_replay_cpu_rollout_and_update():
+    _, _, metrics, state, update_metrics = run_level3_smoke(
+        "cpu", 4, max_episode_steps=1, profile="level3_v18_plr"
+    )
+    assert bool(jnp.all(metrics.done))
+    assert np.isfinite(float(update_metrics["loss"]))
+    assert int(state.step) > 0
