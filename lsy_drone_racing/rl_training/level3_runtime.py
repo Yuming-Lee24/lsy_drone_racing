@@ -40,7 +40,9 @@ def create_level3_environment(
         freq=race_config.env.freq,
         sim_config=race_config.sim,
         track=race_config.env.track,
-        sensor_range=race_config.env.sensor_range,
+        sensor_range=(
+            race_config.env.sensor_range if config.sensor_range is None else config.sensor_range
+        ),
         control_mode="attitude",
         disturbances=race_config.env.get("disturbances"),
         randomizations=race_config.env.get("randomizations"),

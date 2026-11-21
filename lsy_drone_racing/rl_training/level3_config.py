@@ -311,6 +311,7 @@ class Level3PPOConfig:
     reward: Level3RewardCoefficients = Level3RewardCoefficients()
     segment_reset: SegmentResetConfig = SegmentResetConfig()
     level_replay: LevelReplayConfig = LevelReplayConfig()
+    sensor_range: float | None = None
     allow_policy_initialization: bool = False
 
     @property
@@ -431,6 +432,7 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v18_plr",
     "level3_v19_tight",
     "level3_v20_memory",
+    "level3_v21_fullinfo",
     "level3_v3_reward",
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
@@ -606,10 +608,11 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             reward=Level3V18RewardCoefficients(),
             level_replay=LevelReplayConfig(enabled=name == "level3_v18_plr"),
         )
-    elif name in ("level3_v19_tight", "level3_v20_memory"):
+    elif name in ("level3_v19_tight", "level3_v20_memory", "level3_v21_fullinfo"):
         config = Level3PPOConfig(
             profile=name,
-            history_length=25 if name == "level3_v20_memory" else 4,
+            history_length=4 if name == "level3_v19_tight" else 25,
+            sensor_range=10.0 if name == "level3_v21_fullinfo" else None,
             learning_rate_start=5e-5,
             learning_rate_end=1e-5,
             entropy_coef=0.001,

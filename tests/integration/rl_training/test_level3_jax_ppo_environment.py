@@ -645,3 +645,21 @@ def test_level3_level_replay_cpu_rollout_and_update():
     assert bool(jnp.all(metrics.done))
     assert np.isfinite(float(update_metrics["loss"]))
     assert int(state.step) > 0
+
+
+@pytest.mark.integration
+def test_level3_full_sensor_range_exposes_true_track_from_reset():
+    config = get_level3_profile("level3_v21_fullinfo").with_overrides(
+        device="cpu", num_envs=4, num_steps=2, num_minibatches=1, total_timesteps=8
+    )
+    env = create_level3_environment(config)
+    runner = initialize_level3_runner(env, config)
+    data = runner.environment_data
+    assert bool(jnp.all(data.gates_visited)) and bool(jnp.all(data.obstacles_visited))
+    np.testing.assert_allclose(runner.belief_observation["gates_pos"], data.gates_pos)
+    np.testing.assert_allclose(runner.belief_observation["obstacles_pos"], data.obstacles_pos)
+    np.testing.assert_allclose(runner.observation_memory.nominal_gates_pos, data.gates_pos)
+    assert runner.observation_memory.history.shape[1] == 25
+    default = get_level3_profile("level3_v20_memory")
+    assert default.sensor_range is None
+    env.close()
