@@ -12,6 +12,7 @@ import jax.numpy as jnp
 from flax import serialization
 
 from lsy_drone_racing.rl_training.checkpoint import CHECKPOINT_FILE, METADATA_FILE, POLICY_FILE
+from lsy_drone_racing.rl_training.level3_observations import HISTORY_FRAME_DIM
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -152,9 +153,35 @@ def restore_level3_checkpoint(
     return state, payload["runner"], int(payload["update"]), int(payload["total_steps"])
 
 
+def _match_policy_shapes(loaded: Any, template: Any, name: str = "params") -> Any:
+    if isinstance(template, dict):
+        return {
+            key: _match_policy_shapes(loaded[key], value, key) for key, value in template.items()
+        }
+    loaded = jnp.asarray(loaded)
+    if loaded.shape == template.shape:
+        return loaded
+    missing_rows = template.shape[0] - loaded.shape[0]
+    if (
+        name == "kernel"
+        and loaded.ndim == 2
+        and loaded.shape[1] == template.shape[1]
+        and missing_rows > 0
+        and missing_rows % HISTORY_FRAME_DIM == 0
+    ):
+        return jnp.concatenate((jnp.zeros((missing_rows, loaded.shape[1]), loaded.dtype), loaded))
+    raise ValueError(f"Policy parameter shape {loaded.shape} does not match {template.shape}")
+
+
 def load_level3_policy(path: Path, target: Any, *, ema: bool = False) -> Any:
-    """Load one validated raw or EMA V2 policy."""
+    """Load one validated raw or EMA V2 policy.
+
+    A shorter-history policy is widened with zero weights for the older history frames, so it
+    initializes a longer-history model without changing its actions.
+    """
     validate_level3_metadata(path)
     filename = EMA_POLICY_FILE if ema else POLICY_FILE
     policy_file = path / filename if path.is_dir() else path
-    return serialization.from_bytes(target, policy_file.read_bytes())
+    loaded = serialization.msgpack_restore(policy_file.read_bytes())
+    template = serialization.to_state_dict(target)
+    return serialization.from_state_dict(target, _match_policy_shapes(loaded, template))

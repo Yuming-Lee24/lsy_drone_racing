@@ -219,6 +219,7 @@ def initialize_level3_runner(
     # flag still makes that fact explicit.
     memory = initialize_level3_memory(
         belief,
+        history_length=config.history_length,
         nominal_gates_pos=jnp.where(
             transformed_start[:, None, None],
             data.nominal_gates_pos,

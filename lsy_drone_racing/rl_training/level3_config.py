@@ -343,8 +343,8 @@ class Level3PPOConfig:
             raise ValueError("curriculum_timesteps must be positive")
         if self.batch_size % self.num_minibatches:
             raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
-        if self.history_length != 4:
-            raise ValueError("Level 3 V2 has a fixed four-step history")
+        if self.history_length <= 0:
+            raise ValueError("history_length must be positive")
         if self.entity_dim % self.attention_heads:
             raise ValueError("entity_dim must be divisible by attention_heads")
         if not 0.0 < self.target_kl:
@@ -430,6 +430,7 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v18_refine",
     "level3_v18_plr",
     "level3_v19_tight",
+    "level3_v20_memory",
     "level3_v3_reward",
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
@@ -605,9 +606,10 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             reward=Level3V18RewardCoefficients(),
             level_replay=LevelReplayConfig(enabled=name == "level3_v18_plr"),
         )
-    elif name == "level3_v19_tight":
+    elif name in ("level3_v19_tight", "level3_v20_memory"):
         config = Level3PPOConfig(
             profile=name,
+            history_length=25 if name == "level3_v20_memory" else 4,
             learning_rate_start=5e-5,
             learning_rate_end=1e-5,
             entropy_coef=0.001,

@@ -122,6 +122,7 @@ def _history_frame(
 def initialize_level3_memory(
     obs: dict[str, Array],
     *,
+    history_length: int = HISTORY_LENGTH,
     nominal_gates_pos: Array | None = None,
     nominal_gates_quat: Array | None = None,
     nominal_obstacles_pos: Array | None = None,
@@ -140,7 +141,7 @@ def initialize_level3_memory(
         previous_action=zeros_action,
         previous_body_velocity=body_velocity,
         previous_angular_velocity=obs["ang_vel"],
-        history=jnp.repeat(frame[:, None], HISTORY_LENGTH, axis=1),
+        history=jnp.repeat(frame[:, None], history_length, axis=1),
     )
 
 
@@ -167,6 +168,7 @@ def advance_level3_memory(
     )
     reset_memory = initialize_level3_memory(
         reset_obs,
+        history_length=memory.history.shape[1],
         nominal_gates_pos=reset_nominal_gates_pos,
         nominal_gates_quat=reset_nominal_gates_quat,
         nominal_obstacles_pos=reset_nominal_obstacles_pos,
@@ -619,7 +621,9 @@ def build_critic_observation(
     )
 
 
-def validate_observation_shapes(actor: ActorObservation, critic: CriticObservation) -> None:
+def validate_observation_shapes(
+    actor: ActorObservation, critic: CriticObservation, history_length: int = HISTORY_LENGTH
+) -> None:
     """Raise a clear error when code and the frozen V2 interface diverge."""
     expected_actor = {
         "ego": EGO_DIM,
@@ -631,8 +635,8 @@ def validate_observation_shapes(actor: ActorObservation, critic: CriticObservati
     for name, width in expected_actor.items():
         if getattr(actor, name).shape[-1] != width:
             raise ValueError(f"Actor {name} width changed; expected {width}")
-    if actor.history.shape[-2] != HISTORY_LENGTH:
-        raise ValueError(f"Actor history length changed; expected {HISTORY_LENGTH}")
+    if actor.history.shape[-2] != history_length:
+        raise ValueError(f"Actor history length changed; expected {history_length}")
     if critic.true_gate_tokens.shape[-1] != GATE_TOKEN_DIM:
         raise ValueError("Critic gate-token width changed")
     if critic.true_obstacle_tokens.shape[-1] != OBSTACLE_TOKEN_DIM:

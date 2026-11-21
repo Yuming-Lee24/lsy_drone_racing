@@ -52,7 +52,7 @@ class Controller(BaseController):
     """Run only the deployment-safe Actor with training-identical memory and normalization."""
 
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
-        """Validate a V2 checkpoint and initialize the four-frame belief state."""
+        """Validate a V2 checkpoint and initialize the configured-length belief state."""
         super().__init__(obs, info, config)
         configured = config.controller.get("checkpoint", None)
         checkpoint = os.environ.get("LSY_LEVEL3_JAX_PPO_CHECKPOINT", configured)
@@ -76,6 +76,7 @@ class Controller(BaseController):
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         training_config = metadata["config"]
         self.max_episode_steps = int(training_config.get("max_episode_steps", 1500))
+        self.history_length = int(training_config.get("history_length", 4))
         self.geometry = SafetyGeometry(**training_config.get("geometry", {}))
         self.pos_limit_low = jnp.asarray([-3.0, -3.0, 0.0], dtype=jnp.float32)
         self.pos_limit_high = jnp.asarray([3.0, 3.0, 2.5], dtype=jnp.float32)
@@ -96,7 +97,9 @@ class Controller(BaseController):
             ),
         )
         initial = _batch_observation(obs)
-        self.observation_memory = initialize_level3_memory(initial)
+        self.observation_memory = initialize_level3_memory(
+            initial, history_length=self.history_length
+        )
         actor = build_actor_observation(
             initial,
             self.observation_memory,
@@ -126,7 +129,9 @@ class Controller(BaseController):
         """Return deterministic ``[roll, pitch, yaw, collective thrust]`` control."""
         current = _batch_observation(obs)
         if self._last_observation is None:
-            self.observation_memory = initialize_level3_memory(current)
+            self.observation_memory = initialize_level3_memory(
+                current, history_length=self.history_length
+            )
         else:
             self.observation_memory, _ = advance_level3_memory(
                 self.observation_memory, current, current, self._last_action, jnp.asarray([False])

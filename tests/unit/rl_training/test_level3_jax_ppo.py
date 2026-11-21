@@ -651,3 +651,43 @@ def test_level3_checkpoint_exactly_restores_optimizer_ema_and_typed_key(tmp_path
     np.testing.assert_array_equal(jax.tree.leaves(policy)[0], jax.tree.leaves(state.params)[0])
     with pytest.raises(ValueError, match="policy-only compatible"):
         restore_level3_checkpoint(tmp_path, state, runner, config)
+
+
+def test_longer_history_memory_and_zero_padded_policy_initialization(tmp_path: Path):
+    obs = synthetic_level3_observation(2)
+    memory = initialize_level3_memory(obs, history_length=25)
+    assert memory.history.shape == (2, 25, HISTORY_FRAME_DIM)
+    action = jnp.full((2, 4), 0.5, dtype=jnp.float32)
+    next_memory, terminal_memory = advance_level3_memory(
+        memory, obs, obs, action, jnp.asarray([True, False])
+    )
+    assert next_memory.history.shape == terminal_memory.history.shape == memory.history.shape
+    np.testing.assert_allclose(next_memory.history[0, :, 6:10], 0.0)
+    np.testing.assert_allclose(next_memory.history[1, -1, 6:10], 0.5)
+
+    short_actor, critic = structured_observations(2)
+    short_actor = short_actor.replace(
+        history=jax.random.normal(jax.random.key(3), (2, HISTORY_LENGTH, HISTORY_FRAME_DIM))
+    )
+    older = jax.random.normal(jax.random.key(4), (2, 21, HISTORY_FRAME_DIM))
+    long_actor = short_actor.replace(history=jnp.concatenate((older, short_actor.history), axis=1))
+    model = Level3ActorCritic(entity_dim=16, attention_heads=4, fusion_dim=32)
+    short_params = model.init(jax.random.key(5), short_actor, critic)["params"]
+    (tmp_path / POLICY_FILE).write_bytes(serialization.to_bytes(short_params))
+    (tmp_path / METADATA_FILE).write_text(
+        json.dumps(
+            {
+                "format_version": LEVEL3_FORMAT_VERSION,
+                "observation_version": LEVEL3_OBSERVATION_VERSION,
+            }
+        )
+    )
+    long_template = model.init(jax.random.key(6), long_actor, critic)["params"]
+    long_params = load_level3_policy(tmp_path, long_template)
+    short_mean, _ = model.apply({"params": short_params}, short_actor, method=model.actor)
+    long_mean, _ = model.apply({"params": long_params}, long_actor, method=model.actor)
+    np.testing.assert_allclose(long_mean, short_mean, rtol=1e-6, atol=1e-6)
+
+    wider = Level3ActorCritic(entity_dim=32, attention_heads=4, fusion_dim=32)
+    with pytest.raises(ValueError, match="does not match"):
+        load_level3_policy(tmp_path, wider.init(jax.random.key(7), short_actor, critic)["params"])
