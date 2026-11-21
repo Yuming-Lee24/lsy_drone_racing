@@ -178,6 +178,15 @@ class Level3V18RewardCoefficients(Level3V17RewardCoefficients):
 
 
 @dataclass(frozen=True)
+class Level3V19RewardCoefficients(Level3V18RewardCoefficients):
+    """V18 with weaker gate-centering risk and a tighter pole keep-away for faster lines."""
+
+    gate_risk: float = 0.20
+    obstacle_clearance: float = 5.0
+    obstacle_clearance_radius: float = 0.30
+
+
+@dataclass(frozen=True)
 class LevelReplayConfig:
     """Training-only prioritized replay of failed track layouts."""
 
@@ -420,6 +429,7 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v17_sprint",
     "level3_v18_refine",
     "level3_v18_plr",
+    "level3_v19_tight",
     "level3_v3_reward",
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
@@ -594,6 +604,18 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             curriculum=False,
             reward=Level3V18RewardCoefficients(),
             level_replay=LevelReplayConfig(enabled=name == "level3_v18_plr"),
+        )
+    elif name == "level3_v19_tight":
+        config = Level3PPOConfig(
+            profile=name,
+            learning_rate_start=5e-5,
+            learning_rate_end=1e-5,
+            entropy_coef=0.001,
+            gamma=0.998,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V19RewardCoefficients(),
         )
     elif name == "level3_v3_reward":
         config = Level3PPOConfig(
