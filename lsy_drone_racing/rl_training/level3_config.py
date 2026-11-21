@@ -63,6 +63,74 @@ class Level3V3RewardCoefficients(Level3RewardCoefficients):
 
 
 @dataclass(frozen=True)
+class Level3V4RewardCoefficients(Level3RewardCoefficients):
+    """Commitment reward: hovering costs time, and passing a gate is never net-negative."""
+
+    gate: float = 100.0
+    safe_gate_speed: float = 0.0
+    failure_per_gate: float = 0.0
+    alignment_temperature: float = 0.04
+    time: float = 0.03
+    gate_pass_speed: float = 5.0
+    timeout_terminal: bool = True
+
+
+@dataclass(frozen=True)
+class Level3V5RewardCoefficients(Level3V4RewardCoefficients):
+    """V4 rebalanced toward completion: costlier crashes, larger finish, no speed bonus."""
+
+    finish: float = 300.0
+    collision: float = 150.0
+    gate_risk: float = 0.40
+    obstacle_risk: float = 0.30
+    gate_pass_speed: float = 0.0
+
+
+@dataclass(frozen=True)
+class Level3V6RewardCoefficients(Level3V5RewardCoefficients):
+    """V5 with the summed reward scaled so value targets stay O(1) for PPO."""
+
+    reward_scale: float = 0.02
+
+
+@dataclass(frozen=True)
+class Level3V7RewardCoefficients(Level3V6RewardCoefficients):
+    """V6 trading lap time for margin: costlier crashes, obstacle risk, and a soft speed limit."""
+
+    collision: float = 250.0
+    obstacle_risk: float = 1.0
+    time: float = 0.01
+    overspeed: float = 2.0
+    speed_limit: float = 1.6
+
+
+@dataclass(frozen=True)
+class Level3V8RewardCoefficients(Level3V7RewardCoefficients):
+    """V7 plus an early horizontal keep-away field around obstacle poles."""
+
+    obstacle_clearance: float = 2.0
+    obstacle_clearance_radius: float = 0.35
+
+
+@dataclass(frozen=True)
+class Level3V9RewardCoefficients(Level3V8RewardCoefficients):
+    """V8 with a binding speed limit and a pole keep-away field that outweighs progress."""
+
+    overspeed: float = 8.0
+    speed_limit: float = 1.5
+    obstacle_clearance: float = 10.0
+    obstacle_clearance_radius: float = 0.40
+
+
+@dataclass(frozen=True)
+class Level3V10RewardCoefficients(Level3V9RewardCoefficients):
+    """V9 plus a margin around unseen nominal poles that covers their worst-case shift."""
+
+    nominal_clearance: float = 5.0
+    nominal_clearance_radius: float = 0.45
+
+
+@dataclass(frozen=True)
 class SegmentResetConfig:
     """Static mixed-start distribution used only by Level 3 training collectors."""
 
@@ -275,6 +343,16 @@ class Level3PPOConfig:
 LEVEL3_PROFILE_NAMES = (
     "level3_v2",
     "level3_v2_segment",
+    "level3_v2_explore",
+    "level3_v4_commit",
+    "level3_v5_safe",
+    "level3_v6_scaled",
+    "level3_v7_margin",
+    "level3_v8_clearance",
+    "level3_v9_slow",
+    "level3_v10_full",
+    "level3_v11_explore",
+    "level3_v12_refine",
     "level3_v3_reward",
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
@@ -290,6 +368,99 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
     elif name == "level3_v2_segment":
         config = Level3PPOConfig(
             profile="level3_v2_segment", segment_reset=SegmentResetConfig(enabled=True)
+        )
+    elif name == "level3_v2_explore":
+        config = Level3PPOConfig(
+            profile="level3_v2_explore",
+            learning_rate_start=3e-4,
+            learning_rate_end=3e-5,
+            entropy_coef=0.02,
+            target_kl=0.03,
+            reward=replace(Level3RewardCoefficients(), gate=100.0),
+        )
+    elif name == "level3_v4_commit":
+        config = Level3PPOConfig(
+            profile="level3_v4_commit",
+            learning_rate_start=3e-4,
+            learning_rate_end=3e-5,
+            target_kl=0.03,
+            reward=Level3V4RewardCoefficients(),
+        )
+    elif name == "level3_v5_safe":
+        config = Level3PPOConfig(
+            profile="level3_v5_safe",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            reward=Level3V5RewardCoefficients(),
+        )
+    elif name == "level3_v6_scaled":
+        config = Level3PPOConfig(
+            profile="level3_v6_scaled",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            reward=Level3V6RewardCoefficients(),
+        )
+    elif name == "level3_v7_margin":
+        config = Level3PPOConfig(
+            profile="level3_v7_margin",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            reward=Level3V7RewardCoefficients(),
+        )
+    elif name == "level3_v8_clearance":
+        config = Level3PPOConfig(
+            profile="level3_v8_clearance",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            reward=Level3V8RewardCoefficients(),
+        )
+    elif name == "level3_v9_slow":
+        config = Level3PPOConfig(
+            profile="level3_v9_slow",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            reward=Level3V9RewardCoefficients(),
+        )
+    elif name == "level3_v10_full":
+        config = Level3PPOConfig(
+            profile="level3_v10_full",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V10RewardCoefficients(),
+        )
+    elif name == "level3_v11_explore":
+        config = Level3PPOConfig(
+            profile="level3_v11_explore",
+            learning_rate_start=2e-4,
+            learning_rate_end=3e-5,
+            entropy_coef=0.01,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V10RewardCoefficients(),
+        )
+    elif name == "level3_v12_refine":
+        config = Level3PPOConfig(
+            profile="level3_v12_refine",
+            learning_rate_start=1e-4,
+            learning_rate_end=2e-5,
+            entropy_coef=0.001,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=Level3V10RewardCoefficients(),
         )
     elif name == "level3_v3_reward":
         config = Level3PPOConfig(

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import jax
+from flax.core import unfreeze
 
 from lsy_drone_racing.rl_training.level3_algorithm import (
     Level3TrainState,
@@ -126,6 +127,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Load EMA instead of raw parameters from --initialize-policy.",
     )
+    parser.add_argument(
+        "--rescale-critic",
+        type=float,
+        help="Multiply the initialized critic value head by this factor (reward-scale changes).",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--disable-validation", action="store_true")
@@ -211,6 +217,11 @@ def train_level3(config: Level3PPOConfig, args: argparse.Namespace) -> None:
         params = load_level3_policy(
             args.initialize_policy, train_state.params, ema=args.initialize_policy_ema
         )
+        if args.rescale_critic is not None:
+            params = unfreeze(params)
+            params["critic_value"] = jax.tree.map(
+                lambda leaf: leaf * args.rescale_critic, params["critic_value"]
+            )
         train_state = Level3TrainState.create(
             apply_fn=model.apply, params=params, tx=build_level3_optimizer(config)
         )

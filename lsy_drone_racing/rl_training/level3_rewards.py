@@ -30,6 +30,10 @@ LEVEL3_REWARD_COMPONENTS = (
     "action_delta",
     "collision",
     "timeout",
+    "time",
+    "gate_pass_speed",
+    "overspeed",
+    "obstacle_clearance",
 )
 
 
@@ -105,9 +109,13 @@ def level3_reward(
     sequence_length = terminal_true_observation["gate_sequence"].shape[-1]
     success = progress >= sequence_length
     collision = environment_terminated & ~success
-    terminated = collision | success
-    timeout = environment_truncated & ~terminated
-    truncated = timeout
+    timeout = environment_truncated & ~(collision | success)
+    if getattr(coefficients, "timeout_terminal", False):
+        terminated = collision | success | timeout
+        truncated = jnp.zeros_like(timeout)
+    else:
+        terminated = collision | success
+        truncated = timeout
     done = terminated | truncated
 
     potential = reward_route_potential(terminal_true_observation, geometry, coefficients)
@@ -122,6 +130,15 @@ def level3_reward(
     passed_count = jnp.maximum(progress - state.last_progress, 0).astype(jnp.float32)
     gate_component = passed_count * coefficients.gate
     finish_component = success.astype(jnp.float32) * coefficients.finish
+    pass_speed = jnp.clip(jnp.linalg.norm(terminal_true_observation["vel"], axis=-1), 0.0, 2.0)
+    gate_pass_speed_component = (
+        getattr(coefficients, "gate_pass_speed", 0.0) * passed_count * pass_speed
+    )
+    time_component = -getattr(coefficients, "time", 0.0) * jnp.ones_like(pass_speed)
+    speed = jnp.linalg.norm(terminal_true_observation["vel"], axis=-1)
+    overspeed_component = -getattr(coefficients, "overspeed", 0.0) * jnp.square(
+        jnp.maximum(speed - getattr(coefficients, "speed_limit", jnp.inf), 0.0)
+    )
 
     gate = current_gate_geometry(terminal_true_observation, geometry)
     safe_prediction = gate.prediction_valid & (gate.clearance > 0.0) & ~success
@@ -161,6 +178,26 @@ def level3_reward(
 
     obstacles = obstacle_geometry(terminal_true_observation, observation_memory, geometry)
     obstacle_risk_component = -coefficients.obstacle_risk * jnp.max(obstacles.risk, axis=-1)
+    clearance_radius = getattr(coefficients, "obstacle_clearance_radius", 0.0)
+    obstacle_clearance_component = jnp.zeros_like(obstacle_risk_component)
+    if clearance_radius > 0.0 and terminal_true_observation["obstacles_pos"].shape[1] > 0:
+        poles = terminal_true_observation["obstacles_pos"]
+        drone = terminal_true_observation["pos"]
+        horizontal = jnp.linalg.norm(poles[..., :2] - drone[:, None, :2], axis=-1)
+        below_top = drone[:, None, 2] <= poles[..., 2] + 0.10
+        proximity = jnp.clip(1.0 - horizontal / clearance_radius, 0.0, 1.0) ** 2
+        obstacle_clearance_component = -coefficients.obstacle_clearance * jnp.max(
+            jnp.where(below_top, proximity, 0.0), axis=-1
+        )
+        nominal_radius = getattr(coefficients, "nominal_clearance_radius", 0.0)
+        if nominal_radius > 0.0:
+            nominal = observation_memory.nominal_obstacles_pos
+            nominal_horizontal = jnp.linalg.norm(nominal[..., :2] - drone[:, None, :2], axis=-1)
+            unseen = ~terminal_true_observation["obstacles_visited"]
+            nominal_proximity = jnp.clip(1.0 - nominal_horizontal / nominal_radius, 0.0, 1.0) ** 2
+            obstacle_clearance_component -= coefficients.nominal_clearance * jnp.max(
+                jnp.where(below_top & unseen, nominal_proximity, 0.0), axis=-1
+            )
 
     lower_clearance = terminal_true_observation["pos"] - pos_limit_low
     upper_clearance = pos_limit_high - terminal_true_observation["pos"]
@@ -194,10 +231,14 @@ def level3_reward(
             action_delta_component,
             collision_component,
             timeout_component,
+            time_component,
+            gate_pass_speed_component,
+            overspeed_component,
+            obstacle_clearance_component,
         ),
         axis=-1,
     ).astype(jnp.float32)
-    reward = jnp.sum(components, axis=-1)
+    reward = jnp.sum(components, axis=-1) * getattr(coefficients, "reward_scale", 1.0)
     episode_components = state.episode_components + components
     episode_length = state.episode_length + 1
     completed_components = jnp.where(done[:, None], episode_components, 0.0)
