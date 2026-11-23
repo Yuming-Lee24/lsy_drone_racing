@@ -111,6 +111,7 @@ class Args:
     vf_coef: float = 0.5
     max_grad_norm: float = 1.0
     hidden: int = 128
+    init: str = ""  # Checkpoint (.npz) to fine-tune from, empty for a fresh policy
     log_every: int = 10
     ckpt_every: int = 200
 
@@ -463,6 +464,17 @@ def save_params(params: dict, path: Path) -> None:
     np.savez(path, **arrays)
 
 
+def load_checkpoint(path: str | Path) -> dict:
+    """Load a checkpoint written by `save_params`."""
+    w = np.load(path)
+    f32 = lambda x: jp.asarray(x, jp.float32)  # noqa: E731
+    return {
+        "actor": [(f32(w[f"W{i}"]), f32(w[f"b{i}"])) for i in range(3)],
+        "critic": [(f32(w[f"C{i}"]), f32(w[f"c{i}"])) for i in range(3)],
+        "log_std": f32(w["log_std"]),
+    }
+
+
 # region PPO
 
 
@@ -606,7 +618,7 @@ def train(args: Args, out_dir: Path) -> Path:
     optimizer = optax.chain(optax.clip_by_global_norm(args.max_grad_norm), optax.adam(lr, eps=1e-5))
     key = jax.random.key(args.seed)
     key, k_params = jax.random.split(key)
-    params = init_params(k_params, args.hidden)
+    params = load_checkpoint(args.init) if args.init else init_params(k_params, args.hidden)
     opt_state = optimizer.init(params)
     obs, _ = env.reset(seed=args.seed)
     n = args.num_envs

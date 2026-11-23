@@ -181,7 +181,8 @@ def rollout(env: BrakeEnv, ctrl, horizon: int, seed: int) -> dict[str, np.ndarra
     obs, _ = env.reset(seed=seed)
     ctrl.reset()
     n = env.num_envs
-    speed0 = np.linalg.norm(np.asarray(env.state()["vel"]), axis=-1)
+    s0 = {key: np.asarray(v) for key, v in env.state().items()}
+    speed0 = np.linalg.norm(s0["vel"], axis=-1)
     alive = np.ones(n, bool)
     cause = np.full(n, "", dtype=object)
     run = np.zeros(n, int)
@@ -210,6 +211,8 @@ def rollout(env: BrakeEnv, ctrl, horizon: int, seed: int) -> dict[str, np.ndarra
     ok = cause == ""
     return {
         "speed0": speed0,
+        "z0": s0["pos"][:, 2],
+        "vz0": s0["vel"][:, 2],
         "ok": ok,
         "cause": cause.astype(str),
         "t_stop": np.where(ok, t_stop, np.inf),
