@@ -27,6 +27,7 @@ from lsy_drone_racing.rl_training.level3_observations import (
     advance_level3_memory,
     build_actor_observation,
     initialize_level3_memory,
+    mask_actor_observation,
 )
 from lsy_drone_racing.rl_training.networks import deterministic_action
 from lsy_drone_racing.rl_training.runtime import PROJECT_ROOT
@@ -77,6 +78,7 @@ class Controller(BaseController):
         training_config = metadata["config"]
         self.max_episode_steps = int(training_config.get("max_episode_steps", 1500))
         self.history_length = int(training_config.get("history_length", 4))
+        self.actor_input_mask = tuple(training_config.get("actor_input_mask", ()))
         self.geometry = SafetyGeometry(**training_config.get("geometry", {}))
         self.pos_limit_low = jnp.asarray([-3.0, -3.0, 0.0], dtype=jnp.float32)
         self.pos_limit_high = jnp.asarray([3.0, 3.0, 2.5], dtype=jnp.float32)
@@ -145,6 +147,7 @@ class Controller(BaseController):
             self.pos_limit_high,
             self.geometry,
         )
+        actor_observation = mask_actor_observation(actor_observation, self.actor_input_mask)
         mean, _ = self._actor(self.params, actor_observation)
         normalized_action = deterministic_action(mean)[0]
         physical_action = scale_action(normalized_action, self.action_low, self.action_high)

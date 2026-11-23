@@ -32,6 +32,7 @@ from lsy_drone_racing.rl_training.level3_observations import (
     build_critic_observation,
     current_gate_geometry,
     initialize_level3_memory,
+    mask_actor_observation,
 )
 from lsy_drone_racing.rl_training.level3_rewards import (
     LEVEL3_REWARD_COMPONENTS,
@@ -174,7 +175,7 @@ def _actor_features(
     memory: Level3ObservationMemory,
     config: Level3PPOConfig,
 ) -> ActorObservation:
-    return build_actor_observation(
+    actor = build_actor_observation(
         belief,
         memory,
         data.steps,
@@ -183,6 +184,7 @@ def _actor_features(
         data.pos_limit_high,
         config.geometry,
     )
+    return mask_actor_observation(actor, config.actor_input_mask)
 
 
 def initialize_level3_runner(

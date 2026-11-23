@@ -312,6 +312,7 @@ class Level3PPOConfig:
     segment_reset: SegmentResetConfig = SegmentResetConfig()
     level_replay: LevelReplayConfig = LevelReplayConfig()
     sensor_range: float | None = None
+    actor_input_mask: tuple[str, ...] = ()
     allow_policy_initialization: bool = False
 
     @property
@@ -410,6 +411,38 @@ class Level3PPOConfig:
         return config
 
 
+LEVEL3_OBSERVATION_ABLATIONS = {
+    "level3_abl_no_history": ("history",),
+    "level3_abl_no_direct_geometry": ("direct_geometry",),
+    "level3_abl_no_obstacles": ("obstacles",),
+    "level3_abl_near_gates": ("far_gates",),
+    "level3_abl_no_visited": ("visited",),
+}
+LEVEL3_SCRATCH_REWARD_ABLATIONS = {
+    "level3_abl_gate10": {"gate": 10.0},
+    "level3_abl_failure_per_gate": {"failure_per_gate": 30.0},
+    "level3_abl_timeout_bootstrap": {"timeout_terminal": False},
+    "level3_abl_no_time": {"time": 0.0},
+    "level3_abl_v2_reward": {
+        "gate": 10.0,
+        "safe_gate_speed": 0.30,
+        "failure_per_gate": 30.0,
+        "alignment_temperature": None,
+        "time": 0.0,
+        "gate_pass_speed": 0.0,
+        "timeout_terminal": False,
+    },
+}
+LEVEL3_FINETUNE_REWARD_ABLATIONS = {
+    "level3_abl_ft_base": {},
+    "level3_abl_ft_no_route_progress": {"route_progress": 0.0},
+    "level3_abl_ft_no_gate_risk": {"gate_risk": 0.0},
+    "level3_abl_ft_no_obstacle_risk": {"obstacle_risk": 0.0},
+    "level3_abl_ft_no_obstacle_clearance": {"obstacle_clearance": 0.0, "nominal_clearance": 0.0},
+    "level3_abl_ft_no_overspeed": {"overspeed": 0.0},
+    "level3_abl_ft_no_time": {"time": 0.0},
+}
+
 LEVEL3_PROFILE_NAMES = (
     "level3_v2",
     "level3_v2_segment",
@@ -433,11 +466,15 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v19_tight",
     "level3_v20_memory",
     "level3_v21_fullinfo",
+    "level3_abl_base",
     "level3_v3_reward",
     "level3_v3_pregate",
     "level3_v3_crossing_seed",
     "level3_v3_mixed_curriculum",
     "level3_v3_route_corridor",
+    *LEVEL3_OBSERVATION_ABLATIONS,
+    *LEVEL3_SCRATCH_REWARD_ABLATIONS,
+    *LEVEL3_FINETUNE_REWARD_ABLATIONS,
 )
 
 
@@ -621,6 +658,34 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             max_grad_norm=2.0,
             curriculum=False,
             reward=Level3V19RewardCoefficients(),
+        )
+    elif (
+        name == "level3_abl_base"
+        or name in LEVEL3_OBSERVATION_ABLATIONS
+        or name in LEVEL3_SCRATCH_REWARD_ABLATIONS
+    ):
+        config = Level3PPOConfig(
+            profile=name,
+            learning_rate_start=3e-4,
+            learning_rate_end=3e-5,
+            target_kl=0.03,
+            reward=replace(
+                Level3V4RewardCoefficients(), **LEVEL3_SCRATCH_REWARD_ABLATIONS.get(name, {})
+            ),
+            actor_input_mask=LEVEL3_OBSERVATION_ABLATIONS.get(name, ()),
+        )
+    elif name in LEVEL3_FINETUNE_REWARD_ABLATIONS:
+        config = Level3PPOConfig(
+            profile=name,
+            history_length=25,
+            learning_rate_start=5e-5,
+            learning_rate_end=1e-5,
+            entropy_coef=0.001,
+            gamma=0.998,
+            target_kl=0.02,
+            max_grad_norm=2.0,
+            curriculum=False,
+            reward=replace(Level3V19RewardCoefficients(), **LEVEL3_FINETUNE_REWARD_ABLATIONS[name]),
         )
     elif name == "level3_v3_reward":
         config = Level3PPOConfig(

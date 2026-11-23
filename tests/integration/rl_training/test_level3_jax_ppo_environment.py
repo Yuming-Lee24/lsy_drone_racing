@@ -63,7 +63,9 @@ def run_level3_smoke(
     )
     env = create_level3_environment(config)
     runner = initialize_level3_runner(env, config)
-    validate_observation_shapes(runner.actor_observation, runner.critic_observation)
+    validate_observation_shapes(
+        runner.actor_observation, runner.critic_observation, config.history_length
+    )
     model = create_level3_model(env, config)
     params = initialize_level3_parameters(
         model, runner.actor_observation, runner.critic_observation, config.seed

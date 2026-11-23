@@ -521,6 +521,45 @@ def _direct_geometry(
     ).astype(jnp.float32)
 
 
+ACTOR_INPUT_ABLATIONS = ("history", "direct_geometry", "obstacles", "far_gates", "visited")
+
+
+def _zero_columns(values: Array, columns: tuple[int, ...]) -> Array:
+    return values.at[..., jnp.asarray(columns)].set(0.0)
+
+
+def mask_actor_observation(actor: ActorObservation, ablations: tuple[str, ...]) -> ActorObservation:
+    """Zero the named actor inputs for ablation studies without changing shapes.
+
+    ``obstacles`` also removes the obstacle-risk entries of the direct geometry, ``far_gates``
+    keeps only the current and next gate tokens, and ``visited`` removes visited flags together
+    with the true-minus-nominal corrections that would reveal them.
+    """
+    unknown = set(ablations) - set(ACTOR_INPUT_ABLATIONS)
+    if unknown:
+        raise ValueError(f"Unknown actor input ablations: {sorted(unknown)}")
+    if "history" in ablations:
+        actor = actor.replace(history=jnp.zeros_like(actor.history))
+    if "direct_geometry" in ablations:
+        actor = actor.replace(direct_geometry=jnp.zeros_like(actor.direct_geometry))
+    if "obstacles" in ablations:
+        actor = actor.replace(
+            obstacle_tokens=jnp.zeros_like(actor.obstacle_tokens),
+            direct_geometry=_zero_columns(actor.direct_geometry, tuple(range(23, 30))),
+        )
+    if "far_gates" in ablations:
+        tokens = actor.gate_tokens
+        near = (tokens[..., 20] > 0.5) | (jnp.abs(tokens[..., 22] - 1.0 / MAX_GATES) < 1e-4)
+        actor = actor.replace(gate_tokens=jnp.where(near[..., None], tokens, 0.0))
+    if "visited" in ablations:
+        actor = actor.replace(
+            gate_tokens=_zero_columns(actor.gate_tokens, tuple(range(12, 19))),
+            obstacle_tokens=_zero_columns(actor.obstacle_tokens, (3, 4, 5, 9)),
+            direct_geometry=_zero_columns(actor.direct_geometry, (22,)),
+        )
+    return actor
+
+
 def build_actor_observation(
     obs: dict[str, Array],
     memory: Level3ObservationMemory,

@@ -691,3 +691,50 @@ def test_longer_history_memory_and_zero_padded_policy_initialization(tmp_path: P
     wider = Level3ActorCritic(entity_dim=32, attention_heads=4, fusion_dim=32)
     with pytest.raises(ValueError, match="does not match"):
         load_level3_policy(tmp_path, wider.init(jax.random.key(7), short_actor, critic)["params"])
+
+
+def test_actor_input_ablation_masks_only_the_named_inputs():
+    from lsy_drone_racing.rl_training.level3_observations import mask_actor_observation
+
+    config = get_level3_profile()
+    obs = synthetic_level3_observation()
+    obs = {
+        **obs,
+        "n_gates_passed": jnp.asarray([0, 1], dtype=jnp.int32),
+        "gates_visited": obs["gates_visited"].at[:, 1].set(True),
+        "obstacles_visited": obs["obstacles_visited"].at[:, 0].set(True),
+    }
+    memory = initialize_level3_memory(obs, nominal_gates_pos=obs["gates_pos"] + 0.1)
+    actor = build_actor_observation(
+        obs,
+        memory,
+        jnp.asarray([0, 7]),
+        config.max_episode_steps,
+        jnp.asarray([-3.0, -3.0, 0.0]),
+        jnp.asarray([3.0, 3.0, 2.5]),
+        config.geometry,
+    )
+    assert mask_actor_observation(actor, ()) is actor
+    with pytest.raises(ValueError, match="Unknown"):
+        mask_actor_observation(actor, ("gates",))
+
+    masked = mask_actor_observation(actor, ("history",))
+    np.testing.assert_allclose(masked.history, 0.0)
+    np.testing.assert_allclose(masked.gate_tokens, actor.gate_tokens)
+
+    masked = mask_actor_observation(actor, ("obstacles",))
+    np.testing.assert_allclose(masked.obstacle_tokens, 0.0)
+    np.testing.assert_allclose(masked.direct_geometry[:, 23:30], 0.0)
+    np.testing.assert_allclose(masked.direct_geometry[:, :23], actor.direct_geometry[:, :23])
+
+    masked = mask_actor_observation(actor, ("far_gates",))
+    kept = np.abs(np.asarray(masked.gate_tokens)).sum(axis=-1) > 0
+    np.testing.assert_array_equal(kept, [[True, True, False, False], [False, True, True, False]])
+    np.testing.assert_allclose(masked.gate_tokens[0, :2], actor.gate_tokens[0, :2])
+
+    assert float(jnp.abs(actor.gate_tokens[..., 12:19]).sum()) > 0
+    masked = mask_actor_observation(actor, ("visited",))
+    np.testing.assert_allclose(masked.gate_tokens[..., 12:19], 0.0)
+    np.testing.assert_allclose(masked.obstacle_tokens[..., [3, 4, 5, 9]], 0.0)
+    np.testing.assert_allclose(masked.direct_geometry[:, 22], 0.0)
+    np.testing.assert_allclose(masked.gate_tokens[..., :12], actor.gate_tokens[..., :12])
