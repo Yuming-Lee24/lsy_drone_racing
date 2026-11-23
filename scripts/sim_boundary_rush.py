@@ -165,7 +165,7 @@ def rl_brake(rec: Recorder, brake: BrakeRL) -> bool:
     for _ in range(int(BRAKE_MAX_DURATION * rec.freq)):
         if brake.stopped(s):
             return True
-        if s["pos"][2] < MIN_HEIGHT - 0.2:
+        if s["pos"][2] < MIN_HEIGHT - 0.05:
             logger.warning("Brake policy fell below its height limit, handing over")
             return False
         rpy, thrust = brake.compute_control(s)

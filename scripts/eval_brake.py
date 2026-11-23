@@ -1,7 +1,8 @@
 """Evaluate brake controllers in simulation and compare the RL policy against baselines.
 
 Controllers:
-    rl          Trained `BrakeAgent` checkpoint.
+    rl          Trained policy: the actor of an `.npz` checkpoint from `train_brake_rl.py` (default:
+                the deployed `brake_rl.npz`).
     analytic    Velocity-feedback controller that tilts the thrust vector against the velocity,
                 saturated at full thrust (near bang-bang), holding the start height.
     goto_vel0   Approximation of the current `Crazyflie.return_to_start` braking: a 7th-order
@@ -12,12 +13,14 @@ Controllers:
 
 All controllers run in the same randomized `BrakeEnv` episodes. Metrics per episode: time until the
 drone is stopped (`is_stopped` for 0.2 s), maximum horizontal excursion from the takeover point,
-height drop and failures by cause (below 0.5 m, above 2 m, flipped, not stopped in the horizon).
+height drop and failures by cause (below MIN_HEIGHT, above 2 m, flipped, not stopped in the
+horizon). `z_min`/`z_max` override the takeover height range of the training distribution.
 Every controller sees identical episodes (same initial states, randomization and sensor noise) and
 the baselines act on the same noisy position/velocity as the policy.
 
 Usage:
-    pixi run -e gpu-tests python scripts/eval_brake.py --ckpt runs/brake/brake_final.ckpt
+    pixi run -e gpu python scripts/eval_brake.py --ckpt runs/brake/brake_final.npz
+    pixi run -e gpu python scripts/eval_brake.py --z_min 0.4 --z_max 0.95 --controllers rl
 """
 
 from __future__ import annotations
@@ -31,18 +34,10 @@ import fire
 import jax
 import jax.numpy as jp
 import numpy as np
-import torch
 from crazyflow.dynamics import load_params
 
-from lsy_drone_racing.control.brake_rl import MAX_TILT_CMD, MIN_HEIGHT
-from lsy_drone_racing.control.train_brake_rl import (
-    MAX_HEIGHT,
-    Args,
-    BrakeAgent,
-    BrakeEnv,
-    to_jax,
-    to_torch,
-)
+from lsy_drone_racing.control.brake_rl import DEFAULT_WEIGHTS, MAX_TILT_CMD, MIN_HEIGHT
+from lsy_drone_racing.control.train_brake_rl import MAX_HEIGHT, Args, BrakeEnv
 
 G = 9.81
 GOTO_DIST = 1.0
@@ -153,21 +148,27 @@ class GoTo:
 
 
 class Policy:
-    """Deterministic RL policy."""
+    """Deterministic RL policy from the actor weights (W0..b2) of an `.npz` checkpoint."""
 
-    def __init__(self, ckpt: Path, hidden: int, device: torch.device):
+    def __init__(self, ckpt: Path):
         """Init."""
-        self.agent = BrakeAgent(hidden=hidden).to(device)
-        self.agent.load_state_dict(torch.load(ckpt, map_location=device))
-        self.device = device
+        w = np.load(ckpt)
+        self.layers = [
+            (jp.asarray(w[f"W{i}"], jp.float32), jp.asarray(w[f"b{i}"])) for i in range(3)
+        ]
+        self.act = jax.jit(self._act)
+
+    def _act(self, layers: list, x: Array) -> Array:
+        for W, b in layers:  # Every layer, including the output, is tanh
+            x = jp.tanh(x @ W.T + b)
+        return x
 
     def reset(self) -> None:
         """Nothing to reset."""
 
     def __call__(self, obs: Array, step: int) -> Array:
         """Action."""
-        with torch.no_grad():
-            return to_jax(self.agent.act(to_torch(obs, self.device)))
+        return self.act(self.layers, obs)
 
 
 def rollout(env: BrakeEnv, ctrl, horizon: int, seed: int) -> dict[str, np.ndarray]:  # noqa: ANN001
@@ -249,8 +250,7 @@ def stats(r: dict[str, np.ndarray], m: np.ndarray, common: np.ndarray) -> dict:
 
 
 def main(
-    ckpt: str | None = None,
-    hidden: int = 128,
+    ckpt: str = str(DEFAULT_WEIGHTS),
     dynamics: str = "first_principles",
     n: int = 4096,
     horizon_s: float = 4.0,
@@ -258,10 +258,16 @@ def main(
     randomize: bool = True,
     controllers: str = "rl,analytic,goto_vel0,goto_zero",
     kv: float = 6.0,
+    z_min: float | None = None,
+    z_max: float | None = None,
     out: str = "runs/brake_eval",
 ) -> None:
     """Evaluate the selected controllers on identical episode batches and write a JSON report."""
     args = Args(dynamics=dynamics, max_episode_time=horizon_s + 1.0, seed=seed)
+    if z_min is not None:
+        args = replace(args, z_min=z_min)
+    if z_max is not None:
+        args = replace(args, z_max=z_max)
     if not randomize:
         args = replace(
             args,
@@ -272,18 +278,16 @@ def main(
             vel_noise=0.0,
             disturbance_force=0.0,
         )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    env = BrakeEnv(args, n, device="gpu" if device.type == "cuda" else "cpu")
+    env = BrakeEnv(args, n, device="gpu" if jax.default_backend() == "gpu" else "cpu")
     env.record = True
     mass = float(load_params(dynamics, args.drone)["mass"])  # nominal, true mass is randomized
     makers = {
-        "rl": lambda: Policy(Path(ckpt), hidden, device),
+        "rl": lambda: Policy(Path(ckpt)),
         "analytic": lambda: Analytic(env, mass, kv),
         "goto_vel0": lambda: GoTo(env, mass, zero_vel=False),
         "goto_zero": lambda: GoTo(env, mass, zero_vel=True),
     }
     names = controllers.split(",") if isinstance(controllers, str) else list(controllers)
-    names = [k for k in names if k != "rl" or ckpt is not None]
     raw = {k: rollout(env, makers[k](), int(horizon_s * env.freq), seed) for k in names}
     common = np.logical_and.reduce([r["ok"] for r in raw.values()])
     bins = [0.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.01]
@@ -299,7 +303,7 @@ def main(
         print(k, json.dumps(report[k]["overall"]), flush=True)
     out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{dynamics}_{'rand' if randomize else 'nominal'}"
+    tag = f"{dynamics}_{'rand' if randomize else 'nominal'}_z{args.z_min:g}-{args.z_max:g}"
     (out_dir / f"report_{tag}.json").write_text(json.dumps(report, indent=2))
     np.savez_compressed(
         out_dir / f"raw_{tag}.npz", **{f"{k}__{m}": v for k, r in raw.items() for m, v in r.items()}

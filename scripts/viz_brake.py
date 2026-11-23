@@ -8,9 +8,9 @@ the side, perpendicular to the takeover velocity.
 Controllers are described in `eval_brake.py`.
 
 Usage:
-    pixi run -e gpu-tests python scripts/viz_brake.py --speed 6
-    pixi run -e gpu-tests python scripts/viz_brake.py --controllers rl,goto_vel0 --episodes 3
-    MUJOCO_GL=egl pixi run -e gpu-tests python scripts/viz_brake.py --gif runs/brake.gif
+    pixi run -e gpu python scripts/viz_brake.py --speed 6
+    pixi run -e gpu python scripts/viz_brake.py --controllers rl,goto_vel0 --episodes 3
+    MUJOCO_GL=egl pixi run -e gpu python scripts/viz_brake.py --gif runs/brake.gif
 """
 
 from __future__ import annotations

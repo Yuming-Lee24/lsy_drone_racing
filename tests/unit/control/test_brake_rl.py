@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import jax
 import jax.numpy as jp
 import numpy as np
 import pytest
@@ -11,7 +12,6 @@ from lsy_drone_racing.control.brake_rl import (
     BrakeRL,
     brake_obs,
     brake_obs_jax,
-    export_weights,
     is_stopped,
     quat2mat,
 )
@@ -66,13 +66,12 @@ def test_is_stopped():
 
 
 @pytest.mark.unit
-def test_exported_policy_matches_torch(tmp_path: Path):
-    torch = pytest.importorskip("torch")
-    from lsy_drone_racing.control.train_brake_rl import BrakeAgent
+def test_checkpoint_matches_training_actor(tmp_path: Path):
+    from lsy_drone_racing.control.train_brake_rl import actor_mean, init_params, save_params
 
-    agent = BrakeAgent()
-    torch.save(agent.state_dict(), tmp_path / "a.ckpt")
-    export_weights(tmp_path / "a.ckpt", tmp_path / "a.npz")
+    params = init_params(jax.random.key(0), 128)
+    params["actor"][-1] = (params["actor"][-1][0] * 100, params["actor"][-1][1])  # Non-trivial out
+    save_params(params, tmp_path / "a.npz")
     brake = BrakeRL(load_params("first_principles", "cf21B_500"), tmp_path / "a.npz")
     s = {k: v[0] for k, v in _random_states(1).items()}
     brake.reset(s)
@@ -80,6 +79,6 @@ def test_exported_policy_matches_torch(tmp_path: Path):
         s["pos"], s["quat"], s["vel"], s["ang_vel"], s["pos"], 0.0, brake.act1, brake.act2
     )
     rpy, thrust = brake.compute_control(s)
-    expected = agent.act(torch.tensor(x, dtype=torch.float32)[None])[0].detach().numpy()
+    expected = np.asarray(actor_mean(params, jp.asarray(x, jp.float32)[None])[0])
     np.testing.assert_allclose(np.asarray(brake.act1), expected, atol=1e-5)
     assert brake.thrust_min <= thrust <= brake.thrust_max

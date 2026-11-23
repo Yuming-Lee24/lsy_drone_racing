@@ -10,8 +10,8 @@ excursion so far (1), last two normalized actions (6).
 Action (3): normalized roll, pitch in [-1, 1] -> +-MAX_TILT_CMD and collective thrust in [-1, 1] ->
 [thrust_min, thrust_max]. Yaw is held at its value when braking starts.
 
-`BrakeRL` runs without torch (the deploy environment has none): export a trained checkpoint with
-    pixi run -e gpu-tests python lsy_drone_racing/control/brake_rl.py <ckpt> [out.npz]
+`BrakeRL` runs on numpy only. It loads the actor weights (W0..b2) of an `.npz` checkpoint written
+by `train_brake_rl.py`; the deployed policy is `brake_rl.npz` next to this file.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 N_OBS = 26
 MAX_TILT_CMD = np.pi / 3
-MIN_HEIGHT = 0.5
+MIN_HEIGHT = 0.15  # Training floor: lower counts as a crash
 STOP_VEL = 0.1
 STOP_ANG_VEL = 1.0
 STOP_COS_TILT = float(np.cos(np.deg2rad(5.0)))
@@ -102,7 +102,7 @@ class BrakeRL:
 
         Args:
             drone_params: Crazyflow drone parameters (needs mass, thrust_min, thrust_max).
-            weights: `.npz` file written by `export_weights`.
+            weights: `.npz` checkpoint written by `train_brake_rl.py`.
         """
         w = np.load(weights)
         self.layers = [(w[f"W{i}"], w[f"b{i}"]) for i in range(3)]
@@ -149,21 +149,3 @@ class BrakeRL:
     def stopped(obs: dict[str, NDArray]) -> bool:
         """Whether the drone can be handed to the high-level commander."""
         return bool(is_stopped(np.asarray(obs["quat"]), np.asarray(obs["vel"]), obs["ang_vel"]))
-
-
-def export_weights(ckpt: str | Path, out: str | Path = DEFAULT_WEIGHTS) -> None:
-    """Export the actor of a `BrakeAgent` checkpoint to a torch-free `.npz` file."""
-    import torch
-
-    sd = torch.load(ckpt, map_location="cpu")
-    arrays = {}
-    for i, layer in enumerate((0, 2, 4)):
-        arrays[f"W{i}"] = sd[f"actor_mean.0.{layer}.weight"].numpy().astype(np.float64)
-        arrays[f"b{i}"] = sd[f"actor_mean.0.{layer}.bias"].numpy().astype(np.float64)
-    np.savez(out, **arrays)
-
-
-if __name__ == "__main__":
-    import fire
-
-    fire.Fire(export_weights)

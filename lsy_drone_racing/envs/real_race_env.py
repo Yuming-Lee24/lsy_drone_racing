@@ -399,7 +399,7 @@ class RealRaceCoreEnv:
             if self.brake.stopped(obs):
                 logger.info("Brake policy stopped the drone")
                 return True
-            if obs["pos"][2] < MIN_HEIGHT - 0.2:
+            if obs["pos"][2] < MIN_HEIGHT - 0.05:
                 logger.warning("Brake policy fell below its height limit, handing over")
                 return False
             rpy, thrust = self.brake.compute_control(obs)
