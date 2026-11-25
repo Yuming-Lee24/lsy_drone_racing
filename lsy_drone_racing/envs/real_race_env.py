@@ -9,14 +9,16 @@ to the real drones.
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import jax
 import numpy as np
 import rclpy
-from crazyflow.drones import load_params as load_hardware_params
-from drone_estimators.ros_nodes.ros2_connector import ROSConnector
+from crazyflow.control import load_params as load_control_params
+from crazyflow.dynamics import load_params as load_dynamics_params
+from drone_estimators.ros import ROSConnector
 from gymnasium import Env
 from scipy.spatial.transform import Rotation as R
 
@@ -25,6 +27,7 @@ from lsy_drone_racing.utils.checks import check_drone_start_pos, check_race_trac
 from lsy_drone_racing.utils.crazyflie import Crazyflie
 
 if TYPE_CHECKING:
+    from crazyflow.dynamics import Dynamics
     from ml_collections import ConfigDict
     from numpy.typing import NDArray
 
@@ -75,6 +78,7 @@ class RealRaceCoreEnv:
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
+        dynamics: Dynamics,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -86,6 +90,7 @@ class RealRaceCoreEnv:
             freq: Environment step frequency.
             track: Track configuration (see `load_track`).
             randomizations: Randomization configuration.
+            dynamics: Dynamics model used to load the drone's physical parameters.
             sensor_range: Sensor range. Determines at which distance the exact position of the
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
@@ -110,7 +115,11 @@ class RealRaceCoreEnv:
         self.control_mode = control_mode
         self.randomizations = randomizations
         drone_config = drones[rank]
-        self.drone_parameters = load_hardware_params(drone_config["drone"])
+        self.drone_parameters = load_dynamics_params(dynamics, drone_config["drone"])
+        # PWM limits are firmware control parameters, separate from the dynamics parameters.
+        control_params = load_control_params("mellinger", drone_config["drone"])["core"]
+        self.drone_parameters.update(pwm_min=control_params["pwm_min"])
+        self.drone_parameters.update(pwm_max=control_params["pwm_max"])
         self.drone = Crazyflie.from_radio(
             radio_id=self.rank,
             radio_channel=drone_config["channel"],
@@ -151,11 +160,11 @@ class RealRaceCoreEnv:
         if options.get("check_drone_start_pos", True):
             check_drone_start_pos(
                 nominal_pos=self.drones.pos[self.rank],
-                real_pos=self._ros_connector.pos[self.drone_name],
+                real_pos=self._ros_connector.est_pos[self.drone_name],
                 rng_config=self.randomizations,
                 drone_name=self.drone_name,
             )
-        self.data.reset(np.stack([self._ros_connector.pos[n] for n in self.drone_names]))
+        self.data.reset(np.stack([self._ros_connector.est_pos[n] for n in self.drone_names]))
 
         self.drone.connect(timeout=10.0)
         self.drone.reset(arm=True)
@@ -170,12 +179,12 @@ class RealRaceCoreEnv:
             )
         else:
             self.drone.send_action_state(
-                action[:3], action[3:6], action[6:9], action[9], action[10:]
+                action[:3], action[3:6], action[6:9], action[9:13], action[13:16]
             )
 
-        drone_pos = np.stack([self._ros_connector.pos[drone] for drone in self.drone_names])
+        drone_pos = np.stack([self._ros_connector.est_pos[drone] for drone in self.drone_names])
         assert drone_pos.dtype == np.float32, "Drone position must be of type float32"
-        drone_quat = np.stack([self._ros_connector.quat[drone] for drone in self.drone_names])
+        drone_quat = np.stack([self._ros_connector.est_quat[drone] for drone in self.drone_names])
         assert drone_quat.dtype == np.float32, "Drone quaternion must be of type float32"
         # Check if the drone is in the sensor range of the gates and obstacles
         dpos = drone_pos[:, None, :2] - self.gates.pos[None, :, :2]
@@ -209,10 +218,12 @@ class RealRaceCoreEnv:
         obstacles_pos = np.where(mask, self.obstacles.pos, self.obstacles.nominal_pos).astype(
             np.float32
         )
-        drone_pos = np.stack([self._ros_connector.pos[drone] for drone in self.drone_names])
-        drone_quat = np.stack([self._ros_connector.quat[drone] for drone in self.drone_names])
-        drone_vel = np.stack([self._ros_connector.vel[drone] for drone in self.drone_names])
-        drone_ang_vel = np.stack([self._ros_connector.ang_vel[drone] for drone in self.drone_names])
+        drone_pos = np.stack([self._ros_connector.est_pos[drone] for drone in self.drone_names])
+        drone_quat = np.stack([self._ros_connector.est_quat[drone] for drone in self.drone_names])
+        drone_vel = np.stack([self._ros_connector.est_vel[drone] for drone in self.drone_names])
+        drone_ang_vel = np.stack(
+            [self._ros_connector.est_ang_vel[drone] for drone in self.drone_names]
+        )
         gate_sequence_shape = (self.n_drones, self.gate_sequence.shape[0])
         gate_sequence = np.broadcast_to(self.gate_sequence, gate_sequence_shape)
         gate_sequence_direction = np.broadcast_to(self.gate_sequence_direction, gate_sequence_shape)
@@ -271,7 +282,7 @@ class RealRaceCoreEnv:
         ros_connector: ROSConnector | None = None
         try:
             ros_connector = ROSConnector(tf_names=tf_names, timeout=10.0)
-            pos, quat = ros_connector.pos, ros_connector.quat
+            pos, quat = ros_connector.tf_pos, ros_connector.tf_quat
         finally:
             if ros_connector is not None:
                 ros_connector.close()
@@ -305,7 +316,7 @@ class RealRaceCoreEnv:
             kwargs.minval, kwargs.maxval, self.obstacles.pos.shape
         )
         for i, name in enumerate(self.drone_names):
-            self.drones.pos[i, ...] = self._ros_connector.pos[name]
+            self.drones.pos[i, ...] = self._ros_connector.est_pos[name]
         logger.info(
             f"Synthesized nominal track (seed: {seed})\n"
             f"Gate positions:\n{self.gates.nominal_pos}\n"
@@ -332,15 +343,19 @@ class RealRaceCoreEnv:
 
         If the drone has finished the track, it will try to return to the start position.
         Irrespective of succeeding or not, the drone will be stopped immediately afterwards or in
-        case of errors, and close the connections to the ROSConnector.
+        case of errors, and close the connections to the ROSConnector. If the environment is
+        closed while a KeyboardInterrupt is propagating (e.g. Ctrl-C during deployment), the drone
+        is emergency-stopped immediately instead of returning to the start position.
         """
         try:
-            if self.data.taken_off:
+            if self.data.taken_off and not isinstance(sys.exception(), KeyboardInterrupt):
                 obs = self.obs()
                 self.drone.return_to_start(
                     self.drones.pos[self.rank],
                     {k: v[self.rank] for k, v in obs.items()},
                     check_ok=rclpy.ok,
+                    # 0.15m above the frame of the highest gate
+                    return_height=self.gates.pos[:, 2].max() + 0.36 + 0.15,
                 )
         finally:
             try:
@@ -381,6 +396,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
+        dynamics: Dynamics,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -389,7 +405,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
         Action space:
             The action space is a single action vector for the drone with the environment rank.
             See [RealRaceCoreEnv][lsy_drone_racing.envs.real_race_env.RealRaceCoreEnv] for more
-            information. Depending on the control mode, it is either a 13D desired drone state
+            information. Depending on the control mode, it is either a 16D desired drone state
             setpoint, or a 4D desired attitude and collective thrust setpoint.
 
         Observation space:
@@ -405,6 +421,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
             freq: Environment step frequency.
             track: Track configuration (see `load_track`).
             randomizations: Randomization configuration.
+            dynamics: Dynamics model used to load the drone's physical parameters.
             sensor_range: Sensor range. Determines at which distance the exact position of the
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
@@ -415,6 +432,7 @@ class RealDroneRaceEnv(RealRaceCoreEnv, Env):
             freq=freq,
             track=track,
             randomizations=randomizations,
+            dynamics=dynamics,
             sensor_range=sensor_range,
             control_mode=control_mode,
         )
@@ -486,6 +504,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
         freq: int,
         track: ConfigDict,
         randomizations: ConfigDict,
+        dynamics: Dynamics,
         sensor_range: float = 0.5,
         control_mode: Literal["state", "attitude"] = "state",
     ):
@@ -497,6 +516,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
             freq: Environment step frequency.
             track: Track configuration (see `load_track`).
             randomizations: Randomization configuration.
+            dynamics: Dynamics model used to load the drone's physical parameters.
             sensor_range: Sensor range. Determines at which distance the exact position of the
                 gates and obstacles is reveiled.
             control_mode: Control mode of the drone.
@@ -507,6 +527,7 @@ class RealMultiDroneRaceEnv(RealRaceCoreEnv, Env):
             freq=freq,
             track=track,
             randomizations=randomizations,
+            dynamics=dynamics,
             sensor_range=sensor_range,
             control_mode=control_mode,
         )

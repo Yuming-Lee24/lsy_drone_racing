@@ -6,8 +6,6 @@ logs
 secrets
 **/*.secret
 saves
-# Local JAX PPO weights, exact-resume state, metrics, and performance reports.
-saves/jax_ppo/
 .pytest_cache
 **/*.json
 !devcontainer.json
@@ -22,5 +20,9 @@ site/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
-ros_ws/
+# ROS2 workspace build artifacts
+ros_ws/src/motion_capture_tracking
+ros_ws/build
+ros_ws/install
+ros_ws/log
 acados/

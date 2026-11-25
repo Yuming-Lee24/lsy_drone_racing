@@ -29,7 +29,7 @@ never silently tells the Actor whether it is nominal or measured; explicit visit
 | --- | --- | --- |
 | `ego` | `[B, 28]` | altitude `/2.5`, body velocity `/4`, angular velocity `/10`, 3x3 body rotation, normalized distance to six arena faces, race progress, remaining episode fraction, previous normalized action |
 | `history` | `[B, 4, 16]` | body velocity `/4`, angular velocity `/10`, previous action, body-velocity delta `/2`, angular-velocity delta `/5` |
-| `gate_tokens` | `[B, 4, 23]` | sequence-ordered relative centre `/3`, directed normal/horizontal/vertical axes, measured-minus-nominal position `/0.20`, rotation correction `/0.25`, visited/passed/current/future flags, relative sequence offset |
+| `gate_tokens` | `[B, P, 23]` | one token per gate pass (`P = len(gate_order)`), sequence-ordered relative centre `/3`, directed normal/horizontal/vertical axes, measured-minus-nominal position `/0.20`, rotation correction `/0.25`, visited/passed/current/future flags, relative sequence offset |
 | `obstacle_tokens` | `[B, 4, 15]` | relative position `/3`, measured correction `/0.20`, relative velocity `/4`, visited, route-corridor distance, time to closest approach, closest clearance, collision risk, valid mask |
 | `direct_geometry` | `[B, 31]` | current directed gate-frame position/velocity, time and predicted point at the plane, opening clearances, prediction/correct-side flags, approach/exit vectors, next-turn sin/cos, current-gate visited, highest-risk obstacle geometry, nearest arena-boundary clearance |
 
@@ -42,7 +42,7 @@ mirrored for reverse gates. All temporal and nominal-map state resets only for c
 The critic has parameters independent from the Actor. It re-encodes the complete Actor belief and
 adds privileged features that are available only during simulation training:
 
-- actual four-gate tokens, four-obstacle tokens, and 31-value direct geometry;
+- actual per-pass gate tokens, four-obstacle tokens, and 31-value direct geometry;
 - actual-versus-nominal corrections contained in those tokens;
 - mass ratio, three diagonal inertia ratios, current external force, and curriculum difficulty
   (`[B, 8]`).
@@ -118,15 +118,19 @@ Validation always uses `d=1` and the original Level 3 environment, independent o
 observation, reward, Actor/Critic, PPO update, collision termination, curriculum, random Level 3
 track generator, and success definition. It must start with random parameters; policy-only
 initialization is rejected. Its historical format-3 checkpoint remains policy-only compatible;
-current exact resume uses format 4 after start-kind telemetry was added.
+format 4 added start-kind telemetry. Current exact resume uses format 5, which records the trained
+`gate_sequence` and Crazyflow 0.4 runner state; formats 2-4 are policy-only and assume the 4-pass
+gate order `(0, 1, 2, 3)`.
 
 After the ordinary reset has generated the complete track, uncertainty, dynamics, and clean
-controller state, each training world independently samples one of four start-progress values with
-probability 0.25: the original start, or just after gate one, two, or three. Segment states are
+controller state, each training world independently samples a start pass uniformly (empty
+`start_probabilities`; an explicit tuple must have one entry per pass): the original start, or just
+after any pass except the last. Per-start metrics and `before_gate_N` are indexed by pass, not by
+physical gate. Segment states are
 placed in the real previous-gate exit frame. The randomized exit distance is 0.25-0.35 m with
 0.04 m lateral/vertical perturbations; unsafe candidates fall back to centred 0.20 m and 0.12 m
 exit candidates. Initial velocity, attitude, angular velocity, passed/visited flags, potential,
-reward history, previous action, state derivatives, and simulated elapsed time are initialized
+reward history, previous action, hover rotor speed, and simulated elapsed time are initialized
 consistently. Segment worlds retain the episode's pre-transform nominal map rather than treating
 the deliberately visited passed gates as newly nominal geometry.
 
@@ -144,48 +148,48 @@ total gates passed, fewer collisions, then mean return.
 - target KL 0.01 stops remaining epochs at epoch boundaries.
 - gradient norm 0.5; parameter EMA 0.99. Validation records raw and EMA independently and stores
   separate `best_raw` and `best_ema` checkpoints.
-- Checkpoints are V2/version-checked. Format 4 exact resume includes raw/EMA parameters,
+- Checkpoints are V2/version-checked. Format 5 exact resume includes raw/EMA parameters,
   optimizer, PRNG, environment, curriculum progress, start progress/kind, belief anchors, and
-  history. Existing format-2/3 V2 checkpoints remain policy-only compatible but are explicitly
+  history. Existing format-2/3/4 V2 checkpoints remain policy-only compatible but are explicitly
   rejected for exact resume; V1 policies are rejected.
 - SIGINT and SIGTERM request a save after the current PPO update.
 
 Commands:
 
 ```bash
-pixi run -e jax-rl-gpu train-level3-jax-ppo --profile level3_v2
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo --profile level3_v2
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v2 --resume saves/jax_ppo/level3_v2/latest
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v2 \
   --initialize-policy saves/jax_ppo/level3_v2_reward4_pilot50m/latest \
   --initialize-policy-ema
-pixi run -e jax-rl-gpu eval-level3-jax-ppo \
+pixi run -e gpu eval-level3-jax-ppo \
   --checkpoint saves/jax_ppo/level3_v2/best_ema --episodes 5000 --seed 30000
 
 # First 50,069,504 steps of the unchanged 500M schedule (382 updates).
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v2_segment --max-updates 382 --skip-final-evaluation
 
 # Run only after the pilot gates pass and the user explicitly authorizes continuation.
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v2_segment \
   --resume saves/jax_ppo/level3_v2_segment/latest
 
 # Always evaluates original starts at full difficulty.
-pixi run -e jax-rl-gpu eval-level3-jax-ppo \
+pixi run -e gpu eval-level3-jax-ppo \
   --profile level3_v2_segment \
   --checkpoint saves/jax_ppo/level3_v2_segment/best_ema \
   --episodes 5000 --seed 30000
 
 # Mixed full/post/pre 50M pilot initialized from the learned crossing primitive.
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v3_mixed_curriculum \
   --initialize-policy saves/jax_ppo/level3_v3_crossing_seed/latest \
   --max-updates 382 --skip-final-evaluation
 
 # Continuous approach-corridor 50M pilot initialized from the raw mixed policy.
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v3_route_corridor \
   --initialize-policy saves/jax_ppo/level3_v3_mixed_curriculum/latest \
   --max-updates 382 --skip-final-evaluation
@@ -293,8 +297,9 @@ so the policy learns the missing turn-and-acquire behavior rather than seeing on
 
 `level3_v3_route_corridor` implements that next curriculum while leaving observation, Reward V3,
 network, PPO, random Level 3 track generation, collision termination, and formal evaluation
-unchanged. Target progress is uniform over gates 1-4. A corridor source is the original race start
-for gate 1 and the previous gate's directed 0.25 m exit for gates 2-4. The destination is the next
+unchanged. Target progress is uniform over the gate passes. A corridor source is the original race
+start for the first pass and the previous pass's directed 0.25 m exit otherwise; candidates less
+than 0.10 m in front of the target gate fall back to the approach point. The destination is the next
 gate's directed entrance. During the first 10% of the unchanged 500M curriculum clock, the sampled
 route fraction expands from `U(0.65,1)` to `U(0,1)`, while entrance depth expands from 0.12-0.18 m
 to 0.30-0.45 m and position, velocity, yaw, roll/pitch, and angular-velocity errors widen. Unsafe

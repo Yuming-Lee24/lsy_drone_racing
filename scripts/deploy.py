@@ -47,6 +47,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         freq=config.env.freq,
         track=config.env.track,
         randomizations=config.env.randomizations,
+        dynamics=config.sim.dynamics,
         sensor_range=config.env.sensor_range,
         control_mode=config.env.control_mode,
     )
@@ -108,9 +109,9 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         finished_track = next_obs["n_gates_passed"] == next_obs["gate_sequence"].shape[0]
         logger.info(f"Track time: {ep_time:.3f}s" if finished_track else "Task not completed")
     finally:
+        env.close()
         if viewer is not None:
             viewer.close()
-        env.close()
 
 
 if __name__ == "__main__":

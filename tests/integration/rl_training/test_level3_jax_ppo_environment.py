@@ -110,7 +110,8 @@ def test_level3_gpu_1024_world_rollout_and_full_update():
     assert metrics.done.shape == (2, 1024)
     assert int(state.step) == 8
     assert bool(jnp.all(jnp.isfinite(rollout.reward)))
-    assert set(np.asarray(runner.episode_start_progress).tolist()) == {0, 1, 2, 3}
+    num_passes = runner.environment_data.gate_sequence.shape[0]
+    assert set(np.asarray(runner.episode_start_progress).tolist()) == set(range(num_passes))
     assert set(np.asarray(runner.episode_start_kind).tolist()) == {
         FULL_START,
         PRE_GATE_START,
@@ -134,7 +135,8 @@ def test_level3_segment_state_geometry_visited_elapsed_and_initializers():
     start = np.asarray(runner.episode_start_progress)
     segment = start > 0
     world = jnp.arange(config.num_envs)
-    previous_sequence_index = jnp.clip(runner.episode_start_progress - 1, 0, 3)
+    num_passes = data.gate_sequence.shape[0]
+    previous_sequence_index = jnp.clip(runner.episode_start_progress - 1, 0, num_passes - 1)
     previous_gate_id = data.gate_sequence[previous_sequence_index]
     previous_center = data.gates_pos[world, previous_gate_id]
     previous_rotation = quaternion_to_matrix(data.gates_quat[world, previous_gate_id])
@@ -147,7 +149,7 @@ def test_level3_segment_state_geometry_visited_elapsed_and_initializers():
     lateral = jnp.sum(relative * horizontal, axis=-1)
     height = jnp.sum(relative * vertical, axis=-1)
 
-    assert set(start.tolist()) == {0, 1, 2, 3}
+    assert set(start.tolist()) == set(range(num_passes))
     assert np.all((np.asarray(directed_exit)[segment] >= 0.119))
     assert np.all((np.asarray(directed_exit)[segment] <= 0.351))
     assert np.all(np.abs(np.asarray(lateral)[segment]) <= 0.041)
@@ -196,9 +198,15 @@ def test_level3_segment_state_geometry_visited_elapsed_and_initializers():
     assert not bool(jnp.any(_candidate_is_safe(data, boundary_candidate, config)))
     assert not bool(jnp.any(_candidate_is_safe(data, data.obstacles_pos[:, 0], config)))
 
-    passed_order = np.arange(4)[None, :] < start[:, None]
-    passed_physical = np.zeros((config.num_envs, 4), dtype=bool)
-    passed_physical[:, np.asarray(data.gate_sequence)] = passed_order
+    sequence = np.asarray(data.gate_sequence)
+    passed_order = np.arange(num_passes)[None, :] < start[:, None]
+    passed_physical = np.stack(
+        [
+            (passed_order & (sequence == gate)).any(axis=1)
+            for gate in range(data.gates_pos.shape[1])
+        ],
+        axis=1,
+    )
     gate_sensor = np.linalg.norm(
         np.asarray(data.sim_data.states.pos[:, 0, None, :2] - data.gates_pos[..., :2]), axis=-1
     ) < float(data.sensor_range[0])
@@ -230,9 +238,15 @@ def test_level3_segment_reverse_gate_full_start_and_evaluation_reset():
         update_epochs=1,
         total_timesteps=16,
     )
+    env = create_level3_environment(config)
+    num_passes = env.data.gate_sequence.shape[0]
     forced = config.with_overrides(
-        segment_reset=replace(config.segment_reset, start_probabilities=(0.0, 1.0, 0.0, 0.0))
+        segment_reset=replace(
+            config.segment_reset,
+            start_probabilities=tuple(float(i == 1) for i in range(num_passes)),
+        )
     )
+    env.close()
     env = create_level3_environment(forced)
     reset_data, _ = env._reset(env.data, seed=7)
     positive, positive_start, positive_kind = apply_level3_segment_reset(
@@ -320,9 +334,15 @@ def test_level3_pregate_starts_on_entrance_side_and_handles_reverse_gate():
     assert bool(jnp.all(signed_distance >= -config.segment_reset.entrance_distance_max - 1e-5))
     assert bool(jnp.all(forward_speed > 0.0))
 
-    passed_order = np.arange(4)[None, :] < np.asarray(start)[:, None]
-    passed_physical = np.zeros((config.num_envs, 4), dtype=bool)
-    passed_physical[world[:, None], np.asarray(reset_data.gate_sequence)[None, :]] = passed_order
+    sequence = np.asarray(reset_data.gate_sequence)
+    passed_order = np.arange(sequence.shape[0])[None, :] < np.asarray(start)[:, None]
+    passed_physical = np.stack(
+        [
+            (passed_order & (sequence == gate)).any(axis=1)
+            for gate in range(pregate.gates_pos.shape[1])
+        ],
+        axis=1,
+    )
     gate_sensor = np.linalg.norm(
         np.asarray(pregate.sim_data.states.pos[:, 0, None, :2] - pregate.gates_pos[..., :2]),
         axis=-1,
@@ -332,7 +352,10 @@ def test_level3_pregate_starts_on_entrance_side_and_handles_reverse_gate():
     )
 
     forced = config.with_overrides(
-        segment_reset=replace(config.segment_reset, start_probabilities=(1.0, 0.0, 0.0, 0.0))
+        segment_reset=replace(
+            config.segment_reset,
+            start_probabilities=tuple(float(i == 0) for i in range(sequence.shape[0])),
+        )
     )
     reverse_source = reset_data.replace(
         gate_sequence_direction=reset_data.gate_sequence_direction.at[0].set(-1)
@@ -388,14 +411,17 @@ def test_level3_mixed_curriculum_combines_full_post_and_progressive_pregate_star
     frequencies = np.bincount(kind, minlength=3) / kind.size
     np.testing.assert_allclose(frequencies, (0.10, 0.20, 0.70), atol=0.05)
     np.testing.assert_array_equal(start[kind == FULL_START], 0)
-    assert np.all((start[kind == POST_GATE_START] >= 1) & (start[kind == POST_GATE_START] <= 3))
+    last_pass = mixed.gate_sequence.shape[0] - 1
+    assert np.all(
+        (start[kind == POST_GATE_START] >= 1) & (start[kind == POST_GATE_START] <= last_pass)
+    )
     np.testing.assert_allclose(
         mixed.sim_data.states.pos[np.asarray(kind == FULL_START), 0],
         source.sim_data.states.pos[np.asarray(kind == FULL_START), 0],
     )
 
     world = jnp.arange(config.num_envs)
-    pre_target = jnp.clip(jnp.asarray(start), 0, 3)
+    pre_target = jnp.clip(jnp.asarray(start), 0, last_pass)
     pre_gate_id = mixed.gate_sequence[pre_target]
     pre_rotation = quaternion_to_matrix(mixed.gates_quat[world, pre_gate_id])
     pre_direction = mixed.gate_sequence_direction[pre_target]
@@ -408,7 +434,7 @@ def test_level3_mixed_curriculum_combines_full_post_and_progressive_pregate_star
 
     _, wide, wide_start, wide_kind = reset_at(0.40, 909)
     wide_world = jnp.arange(config.num_envs)
-    wide_target = jnp.clip(jnp.asarray(wide_start), 0, 3)
+    wide_target = jnp.clip(jnp.asarray(wide_start), 0, wide.gate_sequence.shape[0] - 1)
     wide_gate_id = wide.gate_sequence[wide_target]
     wide_rotation = quaternion_to_matrix(wide.gates_quat[wide_world, wide_gate_id])
     wide_direction = wide.gate_sequence_direction[wide_target]
@@ -447,7 +473,10 @@ def test_level3_route_corridor_spans_source_to_gate_entrance():
     frequencies = np.bincount(kind, minlength=4) / kind.size
     np.testing.assert_allclose(frequencies, (0.10, 0.0, 0.30, 0.60), atol=0.04)
     np.testing.assert_array_equal(start[kind == FULL_START], 0)
-    assert np.all((start[kind == CORRIDOR_START] >= 0) & (start[kind == CORRIDOR_START] <= 3))
+    last_pass = reset.gate_sequence.shape[0] - 1
+    assert np.all(
+        (start[kind == CORRIDOR_START] >= 0) & (start[kind == CORRIDOR_START] <= last_pass)
+    )
     np.testing.assert_array_equal(
         np.asarray(reset.n_gates_passed[:, 0])[kind == CORRIDOR_START],
         start[kind == CORRIDOR_START],
@@ -483,7 +512,7 @@ def test_level3_route_corridor_spans_source_to_gate_entrance():
     late_source, late_reset, late_start, late_kind = reset_at(0.10, 1002)
     late_mask = late_kind == CORRIDOR_START
     late_world = np.arange(config.num_envs)
-    previous = np.clip(late_start - 1, 0, 3)
+    previous = np.clip(late_start - 1, 0, late_reset.gate_sequence.shape[0] - 1)
     previous_gate_id = np.asarray(late_reset.gate_sequence)[previous]
     previous_rotation = quaternion_to_matrix(
         late_reset.gates_quat[jnp.asarray(late_world), jnp.asarray(previous_gate_id)]

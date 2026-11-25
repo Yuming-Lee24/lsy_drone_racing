@@ -145,8 +145,11 @@ def _critic_features(
     config: Level3PPOConfig,
 ) -> CriticObservation:
     default = env.sim.default_data
-    nominal_mass = default.params.mass.reshape((default.core.n_worlds, -1))[0, 0]
-    nominal_inertia = jnp.diagonal(default.params.J[0, 0])
+    nominal_mass = jnp.ravel(default.params.mass)[0]
+    nominal_inertia = jnp.diagonal(default.params.J.reshape((-1, 3, 3))[0])
+    core = data.sim_data.core
+    mass = jnp.broadcast_to(data.sim_data.params.mass, (core.n_worlds, core.n_drones, 1))
+    inertia = jnp.broadcast_to(data.sim_data.params.J, (core.n_worlds, core.n_drones, 3, 3))
     return build_critic_observation(
         belief,
         actor,
@@ -156,9 +159,9 @@ def _critic_features(
         data.nominal_gates_pos,
         data.nominal_gates_quat,
         data.nominal_obstacles_pos,
-        data.sim_data.params.mass,
+        mass,
         nominal_mass,
-        data.sim_data.params.J,
+        inertia,
         nominal_inertia,
         data.sim_data.states.force,
         data.difficulty,
@@ -638,8 +641,11 @@ def make_level3_evaluation_collector(
     return jax.jit(collect)
 
 
-def summarize_level3_rollout(metrics: Level3RolloutMetrics) -> dict[str, Array]:
-    """Aggregate only stable scalar metrics before any device-to-host transfer."""
+def summarize_level3_rollout(metrics: Level3RolloutMetrics, num_passes: int) -> dict[str, Array]:
+    """Aggregate only stable scalar metrics before any device-to-host transfer.
+
+    ``num_passes`` is the length of the track's gate order, used for the per-start summaries.
+    """
     episode_count = jnp.sum(metrics.done)
     denominator = jnp.maximum(episode_count, 1)
     component_sums = jnp.sum(metrics.episode_components, axis=(0, 1))
@@ -667,7 +673,7 @@ def summarize_level3_rollout(metrics: Level3RolloutMetrics) -> dict[str, Array]:
             for name, value in zip(LEVEL3_REWARD_COMPONENTS, component_sums, strict=True)
         }
     )
-    for start in range(4):
+    for start in range(num_passes):
         start_mask = metrics.done & (metrics.episode_start_progress == start)
         start_count = jnp.sum(start_mask)
         start_denominator = jnp.maximum(start_count, 1)

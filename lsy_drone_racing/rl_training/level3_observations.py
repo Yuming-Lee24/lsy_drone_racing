@@ -22,7 +22,6 @@ OBSTACLE_TOKEN_DIM = 15
 DIRECT_GEOMETRY_DIM = 31
 PRIVILEGED_DYNAMICS_DIM = 8
 ACTION_DIM = 4
-MAX_GATES = 4
 MAX_OBSTACLES = 4
 
 
@@ -549,7 +548,7 @@ def mask_actor_observation(actor: ActorObservation, ablations: tuple[str, ...]) 
         )
     if "far_gates" in ablations:
         tokens = actor.gate_tokens
-        near = (tokens[..., 20] > 0.5) | (jnp.abs(tokens[..., 22] - 1.0 / MAX_GATES) < 1e-4)
+        near = (tokens[..., 20] > 0.5) | (jnp.abs(tokens[..., 22] - 1.0 / tokens.shape[-2]) < 1e-4)
         actor = actor.replace(gate_tokens=jnp.where(near[..., None], tokens, 0.0))
     if "visited" in ablations:
         actor = actor.replace(

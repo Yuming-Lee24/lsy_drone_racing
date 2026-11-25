@@ -31,7 +31,7 @@ import jax
 import jax.numpy as jp
 import mujoco
 import numpy as np
-from crazyflow.drones import load_params as load_hardware_params
+from crazyflow.dynamics import load_params as load_dynamics_params
 from crazyflow.sim import Sim
 from crazyflow.sim.pipeline import append_fn, insert_fn_before
 from crazyflow.sim.sim import seed_sim, sync_sim2mjx, use_box_collision
@@ -53,6 +53,8 @@ from lsy_drone_racing.envs.randomize import (
 from lsy_drone_racing.envs.utils import gate_passed, load_gate_order, load_track
 
 if TYPE_CHECKING:
+    from crazyflow.drones import Drone
+    from crazyflow.dynamics import Dynamics
     from crazyflow.sim.data import SimData
     from jax import Array, Device
     from ml_collections import ConfigDict
@@ -230,25 +232,29 @@ class EnvSettings:
         )
 
 
-def build_action_space(control_mode: Literal["state", "attitude"], drone: str) -> spaces.Box:
+def build_action_space(
+    control_mode: Literal["state", "attitude"], drone: Drone, dynamics: Dynamics
+) -> spaces.Box:
     """Create the action space for the environment.
 
     Args:
         control_mode: The control mode to use. Either "state" for full-state control
             or "attitude" for attitude control.
         drone: Drone model of the environment.
+        dynamics: Dynamics model used by the simulation.
 
     Returns:
         A Box space representing the action space for the specified control mode.
     """
     if control_mode == "state":
-        return spaces.Box(low=-np.inf, high=np.inf, shape=(13,))
+        return spaces.Box(low=-np.inf, high=np.inf, shape=(16,))
     if control_mode == "attitude":
-        params = load_hardware_params(drone)
-        thrust_min, thrust_max = params["thrust_min"] * 4, params["thrust_max"] * 4
+        params = load_dynamics_params(dynamics, drone)
+        total_thrust_min = params["thrust_min"] * 4
+        total_thrust_max = params["thrust_max"] * 4
         return spaces.Box(
-            np.array([-np.pi / 2, -np.pi / 2, -np.pi / 2, thrust_min], dtype=np.float32),
-            np.array([np.pi / 2, np.pi / 2, np.pi / 2, thrust_max], dtype=np.float32),
+            np.array([-np.pi / 2, -np.pi / 2, -np.pi / 2, total_thrust_min], dtype=np.float32),
+            np.array([np.pi / 2, np.pi / 2, np.pi / 2, total_thrust_max], dtype=np.float32),
         )
     raise ValueError(f"Invalid control mode: {control_mode}")
 
@@ -325,7 +331,7 @@ class RaceCoreEnv:
       obstacles and the true position is known
 
     The action space consists of a desired full-state command
-    [x, y, z, vx, vy, vz, ax, ay, az, yaw, rrate, prate, yrate] that is tracked by the drone's
+    [x, y, z, vx, vy, vz, ax, ay, az, qx, qy, qz, qw, wx, wy, wz] that is tracked by the drone's
     low-level controller, or a desired collective thrust and attitude command [collective thrust,
     roll, pitch, yaw].
     """
@@ -482,8 +488,8 @@ class RaceCoreEnv:
 
         Args:
             data: The environment data.
-            action: Full-state command [x, y, z, vx, vy, vz, ax, ay, az, yaw, rrate, prate, yrate]
-                to follow.
+            action: Full-state command
+                [x, y, z, vx, vy, vz, ax, ay, az, qx, qy, qz, qw, wx, wy, wz] to follow.
         """
 
     def render(self):
@@ -518,6 +524,7 @@ class RaceCoreEnv:
         """Build a function that resets the environment data and simulation data."""
         sim_reset_fn = self.sim.build_reset_fn()
         default_sim_data = self.sim.default_data
+        device = self.settings.device
         randomize_track = build_track_randomization_fn(
             self.settings.randomizations, track=self.track
         )
@@ -529,7 +536,7 @@ class RaceCoreEnv:
         ) -> tuple[EnvData, tuple[dict[str, Array], dict]]:
             sim_data = data.sim_data
             if seed is not None:
-                sim_data = seed_sim(sim_data, seed, sim_data.core.device)
+                sim_data = seed_sim(sim_data, seed, device)
             key, track_key, difficulty_key = jax.random.split(sim_data.core.rng_key, 3)
             sim_data = sim_data.replace(core=sim_data.core.replace(rng_key=key))
             # Randomization of the drone is compiled into the sim reset pipeline, so we don't need
@@ -621,7 +628,7 @@ class RaceCoreEnv:
 
     def build_apply_action_fn(self) -> Callable[[Array, EnvData, EnvSettings], EnvData]:
         """Build a function that applies the action to the simulation."""
-        action_space = build_action_space(self.sim.control, self.sim.drone)
+        action_space = build_action_space(self.sim.control, self.sim.drone, self.sim.dynamics)
         if self.sim.control == "state":
             ctrl_fn = F.state_control
         elif self.sim.control == "attitude":
@@ -754,6 +761,8 @@ class RaceCoreEnv:
         obstacle_spec = mujoco.MjSpec.from_file(str(self.obstacle_spec_path))
         frame = self.sim.spec.worldbody.add_frame()
         n_gates, n_obstacles = len(track.gates), len(track.obstacles)
+        gates_pos = np.array([g["pos"] for g in track.gates])
+        gates_yaw = np.array([g["rpy"][2] for g in track.gates])
         for i in range(n_gates):
             gate_body = gate_spec.body("gate")
             if gate_body is None:
@@ -763,6 +772,12 @@ class RaceCoreEnv:
             # Convert from scipy order to MuJoCo order
             gate.quat = R.from_euler("xyz", track.gates[i]["rpy"]).as_quat(scalar_first=True)
             gate.mocap = True  # Make mocap to modify the position of static bodies during sim
+            # A gate stacked onto a lower gate is mounted on that gate's stand
+            lower = gates_pos[:, 2] < gates_pos[i, 2]
+            near = np.linalg.norm(gates_pos[:, :2] - gates_pos[i, :2], axis=-1) <= 0.05  # 5cm
+            parallel = np.abs(np.cos(gates_yaw - gates_yaw[i])) >= np.cos(np.deg2rad(5))  # 5 deg
+            if np.any(lower & near & parallel):
+                self.sim.spec.delete(self.sim.spec.geom(f"gate_stand:{i}"))
         for i in range(n_obstacles):
             obstacle_body = obstacle_spec.body("obstacle")
             if obstacle_body is None:

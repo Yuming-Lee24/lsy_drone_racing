@@ -7,16 +7,16 @@ state. The production path does not import Torch, NumPy, SciPy, Gymnasium wrappe
 ## Commands
 
 ```bash
-pixi run -e jax-rl-gpu train-jax-ppo --profile fast
-pixi run -e jax-rl-gpu train-jax-ppo --profile fast --disable-early-stopping
-pixi run -e jax-rl-gpu train-jax-ppo --profile safe_fast
-pixi run -e jax-rl-gpu eval-jax-ppo --checkpoint saves/jax_ppo/fast/best --profile fast
+pixi run -e gpu train-jax-ppo --profile fast
+pixi run -e gpu train-jax-ppo --profile fast --disable-early-stopping
+pixi run -e gpu train-jax-ppo --profile safe_fast
+pixi run -e gpu eval-jax-ppo --checkpoint saves/jax_ppo/fast/best --profile fast
 ```
 
 Resume an exact training state with:
 
 ```bash
-pixi run -e jax-rl-gpu train-jax-ppo \
+pixi run -e gpu train-jax-ppo \
   --profile fast --resume saves/jax_ppo/fast/latest
 ```
 
@@ -30,7 +30,7 @@ The local PyTorch reference is isolated from the production environment:
 ```bash
 pixi run -e rl-benchmark-gpu benchmark-torch-ppo \
   --timesteps 10000000 --output saves/jax_ppo/performance/torch_10m.json
-pixi run -e jax-rl-gpu benchmark-jax-ppo \
+pixi run -e gpu benchmark-jax-ppo \
   --timesteps 10000000 \
   --pytorch-report saves/jax_ppo/performance/torch_10m.json \
   --output saves/jax_ppo/performance/jax_10m.json

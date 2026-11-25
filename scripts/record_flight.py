@@ -19,7 +19,7 @@ Each episode is written to ``saves/flight_logs/<timestamp>_<mode>_<episode>/`` a
     quat         (N+1, 4)  orientation, xyzw
     vel          (N+1, 3)  world linear velocity
     ang_vel      (N+1, 3)  angular velocity
-    n_gates_passed (N+1,)
+    n_gates_passed (N+1,)   index into ``gate_sequence`` (saved in meta.json) of the target pass
     action       (N, A)    command sent to the drone (after optional excitation noise)
     policy_action (N, A)   command produced by the controller
     compute_time (N,)      controller computation time in seconds
@@ -103,6 +103,7 @@ def _make_env(mode: str, config: ConfigDict) -> gymnasium.Env:
             freq=config.env.freq,
             track=config.env.track,
             randomizations=config.env.randomizations,
+            dynamics=config.sim.dynamics,
             sensor_range=config.env.sensor_range,
             control_mode=config.env.control_mode,
         )
@@ -209,6 +210,7 @@ def main(
                         "seed": seed,
                         "outcome": outcome,
                         "gates_passed": int(np.asarray(obs["n_gates_passed"])),
+                        "gate_sequence": np.asarray(obs["gate_sequence"]).tolist(),
                         "gates_pos": np.asarray(obs["gates_pos"]).tolist(),
                         "obstacles_pos": np.asarray(obs["obstacles_pos"]).tolist(),
                         "started": stamp,

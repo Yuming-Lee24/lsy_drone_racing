@@ -2,7 +2,7 @@
 
 This module intentionally does not participate in training, evaluation, or deployment. It keeps
 the eager policy/JAX-environment boundary from the 25ws implementation while using the same
-Crazyflow 0.3.0 transition, observation, reward, and PPO parameters as the fused JAX experiment.
+Crazyflow 0.4 transition, observation, reward, and PPO parameters as the fused JAX experiment.
 """
 
 from __future__ import annotations

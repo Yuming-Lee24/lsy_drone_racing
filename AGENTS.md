@@ -44,9 +44,9 @@ must not regress.
 
 - Repository: `/media/ymlee/yuming_data/repos/lsy_drone_racing`
 - Git remotes: `origin` is the user's fork; `upstream` is `utiasDSL/lsy_drone_racing`.
-- Supported Crazyflow range: `>=0.3.0,<0.4.0`; the current lock resolves Crazyflow 0.3.0.
+- Supported Crazyflow range: `>=0.4.0,<0.5.0`; the current lock resolves Crazyflow 0.4.0.
 - Training hardware used so far: one NVIDIA RTX 4070.
-- Production training environment: `jax-rl-gpu`.
+- Production training environment: `gpu`.
 - CPU test environment: `tests`.
 - CUDA test environment: `gpu-tests`.
 - PyTorch/JAX comparison environment: `rl-benchmark-gpu`.
@@ -114,7 +114,7 @@ MLP with a Flax MLP.
 
 Crazyflow helpers beginning with `_` are currently used to reproduce the exact functional step
 order. Re-audit those calls when upgrading Crazyflow; do not assume private API compatibility past
-0.3.x.
+0.4.x.
 
 ## Current policy and action semantics
 
@@ -222,7 +222,7 @@ Level 3 V2 is implemented behind separate modules/profile/checkpoints; it does n
 files or the configured Level 2 controller. Key invariants:
 
 - Actor input is deployment-safe structured belief: 28 ego values, four 16-value history frames,
-  four 23-value gate tokens, four 15-value obstacle tokens, and a 31-value direct geometry skip.
+  one 23-value gate token per gate pass, four 15-value obstacle tokens, and a 31-value direct geometry skip.
 - Actor and critic parameters are independent. The critic re-encodes Actor belief and adds actual
   geometry plus eight dynamics/disturbance/difficulty values.
 - Shared per-entity encoders feed parameter-free four-head ego-query attention pooling. The direct
@@ -257,8 +257,9 @@ RaceCore reset still generates the entire random track, uncertainty, dynamics an
 pure-JAX transform then initializes directed exit pose/velocity, elapsed time, visited flags,
 reward potential/history and runner start progress. Training metrics are split by start progress.
 Validation/evaluation always force original full starts. Those historical format-3 checkpoints
-remain policy-only compatible after start-kind telemetry was added; current format 4 exactly
-restores the runner. Selection is lexicographic by successes, total gates passed, fewer collisions,
+remain policy-only compatible after start-kind telemetry was added; format 4 (Crazyflow 0.3, 4-pass
+route) is policy-only too, and current format 5 exactly restores the runner and records
+`gate_sequence`. Selection is lexicographic by successes, total gates passed, fewer collisions,
 and mean return.
 
 The segment experiment must start from random parameters. Its 382-update pilot is 50,069,504 steps
@@ -313,7 +314,7 @@ environment and the 500M curriculum clock. Full/post/pre probabilities move thro
 10/20/70% at progress 0, 20/25/55% at 10%, 45/30/25% at 40%, and 70/15/15% at 80% and later.
 Pre-gate geometry expands by 40% progress from 0.12-0.18 m, +/-0.015 m and 0.60-0.90 m/s to
 0.60-1.00 m, +/-0.12 m and 0.15-0.50 m/s. Post-gate geometry stays unchanged. Runner/checkpoint
-format 4 records start kind separately from start progress, and rollout metrics report full,
+formats 4+ record start kind separately from start progress, and rollout metrics report full,
 post-gate and pre-gate outcomes independently. Formal evaluation remains original full-start.
 The RTX 4070 benchmark passed at 180,928.00 end-to-end SPS and 2.15098x the same-environment
 PyTorch baseline, with 9,511 MiB peak memory. Start with a 382-update 50M pilot; do not launch the
@@ -409,23 +410,23 @@ the V1 controller usable while developing V2.
 Training and exact resume:
 
 ```bash
-pixi run -e jax-rl-gpu train-jax-ppo --profile fast
-pixi run -e jax-rl-gpu train-jax-ppo --profile fast --disable-early-stopping
-pixi run -e jax-rl-gpu train-jax-ppo \
+pixi run -e gpu train-jax-ppo --profile fast
+pixi run -e gpu train-jax-ppo --profile fast --disable-early-stopping
+pixi run -e gpu train-jax-ppo \
   --profile fast --resume saves/jax_ppo/fast/latest --disable-early-stopping
 ```
 
 Deterministic policy evaluation:
 
 ```bash
-pixi run -e jax-rl-gpu eval-jax-ppo \
+pixi run -e gpu eval-jax-ppo \
   --checkpoint saves/jax_ppo/fast/latest --profile fast --episodes 500 --seed 30000
 ```
 
 Controller simulation using the configured Level 2 policy:
 
 ```bash
-pixi run -e jax-rl-gpu python scripts/sim.py --config level2.toml
+pixi run -e gpu python scripts/sim.py --config level2.toml
 ```
 
 The script defaults to `level0.toml`, so always pass `--config level2.toml`. Do not override it with
@@ -463,7 +464,7 @@ Performance A/B:
 ```bash
 pixi run -e rl-benchmark-gpu benchmark-torch-ppo \
   --timesteps 10000000 --output saves/jax_ppo/performance/torch_10m.json
-pixi run -e jax-rl-gpu benchmark-jax-ppo \
+pixi run -e gpu benchmark-jax-ppo \
   --timesteps 10000000 \
   --pytorch-report saves/jax_ppo/performance/torch_10m.json \
   --output saves/jax_ppo/performance/jax_10m.json
@@ -472,32 +473,32 @@ pixi run -e jax-rl-gpu benchmark-jax-ppo \
 Level 3 V2 training, evaluation, and same-architecture A/B:
 
 ```bash
-pixi run -e jax-rl-gpu train-level3-jax-ppo --profile level3_v2
-pixi run -e jax-rl-gpu eval-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo --profile level3_v2
+pixi run -e gpu eval-level3-jax-ppo \
   --checkpoint saves/jax_ppo/level3_v2/best_ema --episodes 5000 --seed 30000
 pixi run -e rl-benchmark-gpu benchmark-level3-torch-ppo \
   --timesteps 10000000 --output saves/jax_ppo/performance/level3_v2_final_torch_10m.json
-pixi run -e jax-rl-gpu benchmark-level3-jax-ppo \
+pixi run -e gpu benchmark-level3-jax-ppo \
   --timesteps 10000000 \
   --pytorch-report saves/jax_ppo/performance/level3_v2_final_torch_10m.json \
   --output saves/jax_ppo/performance/level3_v2_final_jax_10m.json
 
-pixi run -e jax-rl-gpu benchmark-level3-jax-ppo \
+pixi run -e gpu benchmark-level3-jax-ppo \
   --profile level3_v2_segment --timesteps 10000000 \
   --pytorch-report saves/jax_ppo/performance/level3_v2_final_torch_10m.json \
   --output saves/jax_ppo/performance/level3_v2_segment_jax_10m.json
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v2_segment --max-updates 382 --skip-final-evaluation
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v2_segment \
   --resume saves/jax_ppo/level3_v2_segment/latest
-pixi run -e jax-rl-gpu eval-level3-jax-ppo \
+pixi run -e gpu eval-level3-jax-ppo \
   --profile level3_v2_segment \
   --checkpoint saves/jax_ppo/level3_v2_segment/best_ema \
   --episodes 5000 --seed 30000
 
 # Continuous approach-corridor 50M pilot; initialize raw policy only.
-pixi run -e jax-rl-gpu train-level3-jax-ppo \
+pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v3_route_corridor \
   --initialize-policy saves/jax_ppo/level3_v3_mixed_curriculum/latest \
   --max-updates 382 --skip-final-evaluation
@@ -520,7 +521,7 @@ systemd-run --user \
   --description='LSY Level 3 mixed-segment JAX PPO 50M pilot' \
   --property=WorkingDirectory=/media/ymlee/yuming_data/repos/lsy_drone_racing \
   --collect \
-  /home/ymlee/.pixi/bin/pixi run -e jax-rl-gpu train-level3-jax-ppo \
+  /home/ymlee/.pixi/bin/pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v2_segment --max-updates 382 --skip-final-evaluation
 ```
 
@@ -560,7 +561,7 @@ In addition to existing regression tests, add tests for:
 - mixed-start sampling ratio, positive/reverse exit-side geometry, candidate safety, state ranges,
   visited/nominal semantics, elapsed time, and per-start reward/history initialization
 - segment masked reset and diagnostics, full-start equivalence, evaluation full-start enforcement,
-  format-2/3 policy-only compatibility/format-4 exact resume, and lexicographic checkpoint selection
+  format-2/3/4 policy-only compatibility/format-5 exact resume, and lexicographic checkpoint selection
 - continuous corridor sampling from original/previous-exit sources, directed/reverse target
   entrance geometry, curriculum coverage expansion, start-kind diagnostics, and full-start fallback
 

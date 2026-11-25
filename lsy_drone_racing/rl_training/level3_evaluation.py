@@ -126,6 +126,7 @@ def evaluate_level3_params(
         _, metrics = collect(runner, params)
         metrics = jax.device_get(metrics)
         frequency = env.settings.freq
+        num_passes = int(env.data.gate_sequence.shape[0])
 
         done = np.asarray(metrics.done)
         if not np.all(done.any(axis=0)):
@@ -206,9 +207,9 @@ def evaluate_level3_params(
     failed_gate_array = np.asarray(failed_gates, dtype=int)
     failures_by_gate = {
         f"before_gate_{gate + 1}": int(np.sum((~successes_array) & (failed_gate_array == gate)))
-        for gate in range(4)
+        for gate in range(num_passes)
     }
-    gates_passed = np.where(successes_array, 4, failed_gate_array)
+    gates_passed = np.where(successes_array, num_passes, failed_gate_array)
     visited_array = np.asarray(current_gate_ever_visited, dtype=bool)
     passed_after_visit_array = np.asarray(current_gate_passed_after_visit, dtype=bool)
     return Level3EvaluationResult(

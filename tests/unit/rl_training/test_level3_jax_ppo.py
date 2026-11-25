@@ -389,11 +389,13 @@ def test_segment_start_sampling_and_frozen_profile_defaults():
     crossing_seed = get_level3_profile("level3_v3_crossing_seed")
     route_corridor = get_level3_profile("level3_v3_route_corridor")
     samples = sample_segment_start_progress(
-        jax.random.key(123), config.segment_reset.start_probabilities, 100_000
+        jax.random.key(123), config.segment_reset.start_probabilities, 100_000, 5
     )
-    frequencies = np.bincount(np.asarray(samples), minlength=4) / samples.size
+    frequencies = np.bincount(np.asarray(samples), minlength=5) / samples.size
 
-    np.testing.assert_allclose(frequencies, 0.25, atol=0.01)
+    np.testing.assert_allclose(frequencies, 0.2, atol=0.01)
+    with pytest.raises(ValueError, match="gate passes"):
+        sample_segment_start_progress(jax.random.key(0), (0.5, 0.5), 8, 5)
     assert config.segment_reset.enabled
     assert config.profile == "level3_v2_segment"
     assert config.segment_reset.start_mode == "post_gate"
@@ -580,7 +582,7 @@ def test_checkpoint_version_rejection_and_level3_controller_determinism(tmp_path
     (tmp_path / METADATA_FILE).write_text(json.dumps(metadata), encoding="utf-8")
     controller_config = ConfigDict(
         {
-            "sim": {"drone": "cf21B_500"},
+            "sim": {"drone": "cf21B_500", "dynamics": "first_principles"},
             "env": {"freq": 50},
             "controller": {"checkpoint": str(tmp_path)},
         }

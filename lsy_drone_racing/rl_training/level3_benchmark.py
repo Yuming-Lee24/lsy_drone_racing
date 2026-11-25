@@ -81,7 +81,7 @@ def main() -> None:
     jax.block_until_ready(optimizer_state.step)
     optimizer_compile_seconds = time.perf_counter() - optimizer_compile_start
     runner, state = rollout_runner, optimizer_state
-    training_step = make_level3_training_step(collector, updater)
+    training_step = make_level3_training_step(collector, updater, env.data.gate_sequence.shape[0])
 
     first_start = time.perf_counter()
     first_result = training_step(runner, state, 0.0)

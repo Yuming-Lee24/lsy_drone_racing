@@ -9,14 +9,15 @@ Note that the trajectory uses pre-defined waypoints instead of dynamically gener
 
 from __future__ import annotations  # Python 3.10 type hints
 
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy
 from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
-from crazyflow.drones import load_params as load_hardware_params
-from crazyflow.dynamics.core import load_params as load_dynamics_params
-from crazyflow.dynamics.so_rpy import dynamics, symbolic_dynamics_euler
+from acados_template.builders import ocp_get_default_cmake_builder
+from crazyflow.dynamics import Dynamics, load_params
+from crazyflow.dynamics.so_rpy import symbolic_dynamics_euler
 from crazyflow.dynamics.utils.rotation import ang_vel2rpy_rates
 from scipy.interpolate import CubicSpline
 from scipy.spatial.transform import Rotation as R
@@ -131,8 +132,10 @@ def create_ocp_solver(
     ocp.constraints.idxbx = np.array([3, 4, 5])
 
     # Set Input Constraints (rpy < 30°)
-    ocp.constraints.lbu = np.array([-0.5, -0.5, -0.5, parameters["thrust_min"] * 4])
-    ocp.constraints.ubu = np.array([0.5, 0.5, 0.5, parameters["thrust_max"] * 4])
+    total_thrust_min = parameters["thrust_min"] * 4
+    total_thrust_max = parameters["thrust_max"] * 4
+    ocp.constraints.lbu = np.array([-0.5, -0.5, -0.5, total_thrust_min])
+    ocp.constraints.ubu = np.array([0.5, 0.5, 0.5, total_thrust_max])
     ocp.constraints.idxbu = np.array([0, 1, 2, 3])
 
     # We have to set x0 even though we will overwrite it later on.
@@ -154,12 +157,20 @@ def create_ocp_solver(
     # set prediction horizon
     ocp.solver_options.tf = Tf
 
+    cmake_builder = None
+    # On Windows, use CMake with MinGW to build the generated MPC solver DLL.
+    if os.name == "nt":
+        cmake_builder = ocp_get_default_cmake_builder()
+        cmake_builder.generator = "MinGW Makefiles"
+        cmake_builder.build_dir = "build-mingw"
+
     acados_ocp_solver = AcadosOcpSolver(
         ocp,
         json_file="c_generated_code/lsy_example_mpc.json",
         verbose=verbose,
         build=True,
         generate=True,
+        cmake_builder=cmake_builder,
     )
 
     return acados_ocp_solver, ocp
@@ -195,10 +206,12 @@ class AttitudeMPC(Controller):
                 [-1.2, -0.2, 0.8],
                 [-1.2, -0.2, 1.2],
                 [-0.0, -0.7, 1.2],
-                [0.5, -0.75, 1.2],
+                [1.2, -0.15, 1.2],
+                [1.05, 0.75, 1.2],
+                [0.25, 1.25, 1.2],
             ]
         )
-        self._t_total = 15  # s
+        self._t_total = 18.75  # s
         t = np.linspace(0, self._t_total, len(waypoints))
         self._des_pos_spline = CubicSpline(t, waypoints)
         self._des_vel_spline = self._des_pos_spline.derivative()
@@ -210,10 +223,7 @@ class AttitudeMPC(Controller):
         )
         self._waypoints_yaw = self._waypoints_pos[:, 0] * 0
 
-        self.drone_params = load_dynamics_params(dynamics, config.sim.drone)
-        thrust_params = load_hardware_params(config.sim.drone)
-        self.drone_params["thrust_min"] = 4 * thrust_params["thrust_min"]
-        self.drone_params["thrust_max"] = 4 * thrust_params["thrust_max"]
+        self.drone_params = load_params(Dynamics.so_rpy, config.sim.drone)
         self._acados_ocp_solver, self._ocp = create_ocp_solver(
             self._T_HORIZON, self._N, self.drone_params
         )

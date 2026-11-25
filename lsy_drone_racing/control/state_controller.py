@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from crazyflow.sim.visualize import draw_line, draw_points
 from scipy.interpolate import CubicSpline
+from scipy.spatial.transform import Rotation as R
 
 from lsy_drone_racing.control import Controller
 
@@ -53,10 +54,12 @@ class StateController(Controller):
                 [-1.2, -0.2, 0.8],
                 [-1.2, -0.2, 1.2],
                 [-0.0, -0.7, 1.2],
-                [0.5, -0.75, 1.2],
+                [1.2, -0.15, 1.2],
+                [1.05, 0.75, 1.2],
+                [0.25, 1.25, 1.2],
             ]
         )
-        self._t_total = 18  # s
+        self._t_total = 22.5  # s
         t = np.linspace(0, self._t_total, len(waypoints))
         self._des_pos_spline = CubicSpline(t, waypoints)
 
@@ -74,15 +77,17 @@ class StateController(Controller):
             info: Optional additional information as a dictionary.
 
         Returns:
-            The drone state [x, y, z, vx, vy, vz, ax, ay, az, yaw, rrate, prate, yrate] as a numpy
-                array.
+            The drone state [x, y, z, vx, vy, vz, ax, ay, az, qx, qy, qz, qw, wx, wy, wz] as a
+            numpy array.
         """
         t = min(self._tick / self._freq, self._t_total)
         if t >= self._t_total:  # Maximum duration reached
             self._finished = True
 
         des_pos = self._des_pos_spline(t)
-        action = np.concatenate((des_pos, np.zeros(10)), dtype=np.float32)
+        des_yaw = 0.0
+        des_quat = R.from_euler("z", des_yaw).as_quat()
+        action = np.concatenate((des_pos, np.zeros(6), des_quat, np.zeros(3)), dtype=np.float32)
         return action
 
     def step_callback(

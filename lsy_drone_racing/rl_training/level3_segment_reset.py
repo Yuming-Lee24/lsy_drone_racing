@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -43,9 +43,16 @@ def _euler_to_quaternion(roll: Array, pitch: Array, yaw: Array) -> Array:
 
 
 def sample_segment_start_progress(
-    key: Array, probabilities: tuple[float, ...], count: int
+    key: Array, probabilities: tuple[float, ...], count: int, num_passes: int
 ) -> Array:
-    """Sample full/segment start IDs ``0..3`` from the frozen profile probabilities."""
+    """Sample start pass indices ``0..num_passes - 1``; empty probabilities mean uniform."""
+    if not probabilities:
+        probabilities = (1.0 / num_passes,) * num_passes
+    if len(probabilities) != num_passes:
+        raise ValueError(
+            f"segment start_probabilities has {len(probabilities)} entries, "
+            f"but the track has {num_passes} gate passes"
+        )
     logits = jnp.log(jnp.asarray(probabilities, dtype=jnp.float32))
     return jax.random.categorical(key, logits, shape=(count,)).astype(jnp.int32)
 
@@ -90,13 +97,8 @@ def sample_mixed_start_kind(
 
 
 def _ordered_track(data: EnvData) -> tuple[Array, Array, Array]:
-    sequence = data.gate_sequence
-    positions = jnp.take_along_axis(
-        data.gates_pos, jnp.broadcast_to(sequence[None, :, None], data.gates_pos.shape), axis=1
-    )
-    quaternions = jnp.take_along_axis(
-        data.gates_quat, jnp.broadcast_to(sequence[None, :, None], data.gates_quat.shape), axis=1
-    )
+    positions = jnp.take(data.gates_pos, data.gate_sequence, axis=1)
+    quaternions = jnp.take(data.gates_quat, data.gate_sequence, axis=1)
     directions = jnp.broadcast_to(
         data.gate_sequence_direction[None].astype(jnp.float32), positions.shape[:2]
     )
@@ -132,6 +134,20 @@ def _candidate_is_safe(data: EnvData, candidate: Array, config: Level3PPOConfig)
     return boundary_safe & gate_safe & obstacle_safe
 
 
+def _hover_rotor_vel(sim_data: Any) -> Array | None:
+    """Per-world hover RPM for dynamics that integrate rotor speed, otherwise ``None``."""
+    params = sim_data.params
+    if not hasattr(params, "rpm2thrust"):
+        return None
+    shape = (sim_data.core.n_worlds, sim_data.core.n_drones)
+    mass = jnp.broadcast_to(params.mass, (*shape, 1))[..., 0]
+    gravity = jnp.linalg.norm(jnp.broadcast_to(params.gravity_vec, (*shape, 3)), axis=-1)
+    k0, k1, k2 = jnp.moveaxis(jnp.broadcast_to(params.rpm2thrust, (*shape, 3)), -1, 0)
+    thrust = mass * gravity / 4.0
+    rpm = (-k1 + jnp.sqrt(k1 * k1 - 4.0 * k2 * (k0 - thrust))) / (2.0 * k2)
+    return jnp.broadcast_to(rpm[..., None], (*shape, 4))
+
+
 def _replace_synthesized_state(
     data: EnvData,
     config: Level3PPOConfig,
@@ -163,21 +179,20 @@ def _replace_synthesized_state(
         force=jnp.where(state_mask, 0.0, data.sim_data.states.force),
         torque=jnp.where(state_mask, 0.0, data.sim_data.states.torque),
     )
-    derivatives = data.sim_data.states_deriv.replace(
-        vel=jnp.where(state_mask, velocity[:, None], data.sim_data.states_deriv.vel),
-        ang_vel=jnp.where(
-            state_mask, angular_velocity[:, None], data.sim_data.states_deriv.ang_vel
-        ),
-        acc=jnp.where(state_mask, 0.0, data.sim_data.states_deriv.acc),
-        ang_acc=jnp.where(state_mask, 0.0, data.sim_data.states_deriv.ang_acc),
-        rotor_acc=jnp.where(segment_mask[:, None, None], 0.0, data.sim_data.states_deriv.rotor_acc),
-    )
+    hover_rotor_vel = _hover_rotor_vel(data.sim_data)
+    if hover_rotor_vel is not None:
+        # Synthesized starts are airborne: spin the rotors up instead of free-falling from 0 RPM.
+        states = states.replace(
+            rotor_vel=jnp.where(state_mask, hover_rotor_vel, data.sim_data.states.rotor_vel)
+        )
     controls = data.sim_data.controls
     if controls.attitude is not None:
         controls = controls.replace(
             attitude=controls.attitude.replace(
                 r_int_error=jnp.where(state_mask, 0.0, controls.attitude.r_int_error),
-                last_ang_vel=jnp.where(state_mask, 0.0, controls.attitude.last_ang_vel),
+                prev_ang_vel=jnp.where(
+                    state_mask, angular_velocity[:, None], controls.attitude.prev_ang_vel
+                ),
             )
         )
     simulation_steps_per_control_step = int(
@@ -192,9 +207,7 @@ def _replace_synthesized_state(
         ),
         mjx_synced=jnp.asarray(False),
     )
-    sim_data = data.sim_data.replace(
-        states=states, states_deriv=derivatives, controls=controls, core=core
-    )
+    sim_data = data.sim_data.replace(states=states, controls=controls, core=core)
 
     sequence_length = data.gate_sequence.shape[0]
     physical_gate = jnp.arange(data.gates_pos.shape[1])[None, None, :]
@@ -246,7 +259,9 @@ def _apply_route_corridor_reset(
     keys = jax.random.split(data.sim_data.core.rng_key, 16)
     next_key = keys[0]
     sampled_kind = sample_mixed_start_kind(keys[1], data.curriculum_progress, config, count)
-    sampled_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
+    sampled_start = sample_segment_start_progress(
+        keys[2], segment.start_probabilities, count, data.gate_sequence.shape[0]
+    )
     curriculum_fraction = jnp.clip(
         data.curriculum_progress / segment.corridor_geometry_progress_end, 0.0, 1.0
     )
@@ -352,9 +367,16 @@ def _apply_route_corridor_reset(
     random_candidate = jnp.where(corridor[:, None], corridor_candidate, pre_candidate)
     fallback_1 = jnp.where(corridor[:, None], centered_corridor, pre_fallback_1)
     fallback_2 = jnp.where(corridor[:, None], approach_point, pre_fallback_2)
-    safe_random = _candidate_is_safe(data, random_candidate, config)
-    safe_fallback_1 = _candidate_is_safe(data, fallback_1, config)
-    safe_fallback_2 = _candidate_is_safe(data, fallback_2, config)
+
+    def safe(candidate: Array) -> Array:
+        # A straight corridor can run behind the target gate (e.g. gate 4 back to gate 2).
+        depth = -jnp.sum((candidate - target_center) * target_normal, axis=-1)
+        entrance_side = ~corridor | (depth > segment.corridor_min_entrance_depth)
+        return _candidate_is_safe(data, candidate, config) & entrance_side
+
+    safe_random = safe(random_candidate)
+    safe_fallback_1 = safe(fallback_1)
+    safe_fallback_2 = safe(fallback_2)
     candidate = jnp.where(
         safe_random[:, None],
         random_candidate,
@@ -491,9 +513,13 @@ def apply_level3_segment_reset(
     pre_velocity_perturbation = segment.entrance_velocity_perturbation
     if segment.start_mode == "mixed_curriculum":
         sampled_kind = sample_mixed_start_kind(keys[1], data.curriculum_progress, config, count)
-        pre_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
+        pre_start = sample_segment_start_progress(
+            keys[2], segment.start_probabilities, count, data.gate_sequence.shape[0]
+        )
         post_start = 1 + jax.random.categorical(
-            keys[3], jnp.zeros((3,), dtype=jnp.float32), shape=(count,)
+            keys[3],
+            jnp.zeros((data.gate_sequence.shape[0] - 1,), dtype=jnp.float32),
+            shape=(count,),
         ).astype(jnp.int32)
         sampled_start = jnp.where(
             sampled_kind == PRE_GATE_START,
@@ -518,9 +544,13 @@ def apply_level3_segment_reset(
         )
     elif segment.start_mode == "pre_gate":
         sampled_kind = jnp.full((count,), PRE_GATE_START, dtype=jnp.int32)
-        sampled_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
+        sampled_start = sample_segment_start_progress(
+            keys[2], segment.start_probabilities, count, data.gate_sequence.shape[0]
+        )
     else:
-        sampled_start = sample_segment_start_progress(keys[2], segment.start_probabilities, count)
+        sampled_start = sample_segment_start_progress(
+            keys[2], segment.start_probabilities, count, data.gate_sequence.shape[0]
+        )
         sampled_kind = jnp.where(sampled_start > 0, POST_GATE_START, FULL_START).astype(jnp.int32)
     pre_gate = sampled_kind == PRE_GATE_START
     distance_min = jnp.where(pre_gate, pre_distance_min, segment.exit_distance_min)

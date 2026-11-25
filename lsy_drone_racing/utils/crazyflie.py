@@ -15,7 +15,7 @@ from cflib2 import LinkContext
 from cflib2.error import CrazyflieError
 from cflib2.toc_cache import FileTocCache
 from crazyflow.control.transform import force2pwm
-from drone_estimators.ros_nodes.ros2_connector import ROSConnector
+from drone_estimators.ros import ROSConnector
 from scipy.spatial.transform import Rotation as R
 
 if TYPE_CHECKING:
@@ -131,7 +131,8 @@ class Crazyflie:
         publish_to_ros: bool = True,
     ) -> None:
         """Send a roll, pitch, yaw-rate, and collective-thrust command."""
-        pwm = force2pwm(thrust, drone_parameters["thrust_max"] * 4, drone_parameters["pwm_max"])
+        total_thrust_max = drone_parameters["thrust_max"] * 4
+        pwm = force2pwm(thrust, total_thrust_max, drone_parameters["pwm_max"])
         pwm = np.clip(pwm, drone_parameters["pwm_min"], drone_parameters["pwm_max"])
         command = (*np.rad2deg(attitude), int(pwm))
         self._run(self._send_attitude_setpoint, *command)
@@ -143,20 +144,18 @@ class Crazyflie:
         pos: NDArray[np.floating],
         vel: NDArray[np.floating] | None = None,
         acc: NDArray[np.floating] | None = None,
-        yaw: float | None = None,
+        quat: NDArray[np.floating] | None = None,
         body_rates: NDArray[np.floating] | None = None,
     ) -> None:
-        """Send a state command with yaw-only orientation."""
+        """Send a state command."""
         if vel is None:
             vel = np.zeros(3)
         if acc is None:
             acc = np.zeros(3)
-        if yaw is None:
-            yaw = 0.0
+        if quat is None:
+            quat = np.array([0.0, 0.0, 0.0, 1.0])
         if body_rates is None:
             body_rates = np.zeros(3)
-        quat = R.from_euler("z", yaw).as_quat()
-        # TODO have quat as argument and just forward it -> need to change action interface
         self._run(self._send_full_state_setpoint, pos, vel, acc, quat, body_rates)
 
     def return_to_start(
@@ -320,8 +319,8 @@ class Crazyflie:
             self._commander_level = None
 
     async def _reset_estimator(self) -> None:
-        pos = self._ros_connector.pos[self.drone_name]
-        quat = self._ros_connector.quat[self.drone_name]
+        pos = self._ros_connector.tf_pos[self.drone_name]
+        quat = self._ros_connector.tf_quat[self.drone_name]
         param = self.cf.param()
         await param.set("kalman.initialX", pos[0])
         await param.set("kalman.initialY", pos[1])
@@ -352,8 +351,8 @@ class Crazyflie:
         await self.cf.commander().send_setpoint_rpyt(0.0, 0.0, 0.0, 0)
 
     async def _send_external_pose(self) -> None:
-        pos = self._ros_connector.pos[self.drone_name]
-        quat = self._ros_connector.quat[self.drone_name]
+        pos = self._ros_connector.tf_pos[self.drone_name]
+        quat = self._ros_connector.tf_quat[self.drone_name]
         await self.cf.localization().external_pose().send_external_pose(pos=pos, quat=quat)
 
     async def _update_estimators(self, stop_event: Event) -> None:

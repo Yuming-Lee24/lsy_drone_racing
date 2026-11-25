@@ -7,6 +7,7 @@ import json
 import signal
 import time
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -44,10 +45,10 @@ if TYPE_CHECKING:
 
 
 def make_level3_training_step(
-    collector: Callable, ppo_update: Callable
+    collector: Callable, ppo_update: Callable, num_passes: int
 ) -> Callable[[Any, Level3TrainState, float], tuple[Any, Level3TrainState, dict, dict]]:
     """Keep rollout and optimizer as separate XLA executables without a host sync between them."""
-    summarize = jax.jit(summarize_level3_rollout)
+    summarize = jax.jit(partial(summarize_level3_rollout, num_passes=num_passes))
 
     def training_step(
         runner: Any, train_state: Level3TrainState, curriculum_progress: float
@@ -233,7 +234,9 @@ def train_level3(config: Level3PPOConfig, args: argparse.Namespace) -> None:
 
     collector = make_level3_rollout_collector(env, model, config)
     ppo_update = make_level3_ppo_update(config)
-    training_step = make_level3_training_step(collector, ppo_update)
+    training_step = make_level3_training_step(
+        collector, ppo_update, env.data.gate_sequence.shape[0]
+    )
     maximum_updates = config.num_updates
     if args.max_updates is not None:
         maximum_updates = min(maximum_updates, update + args.max_updates)

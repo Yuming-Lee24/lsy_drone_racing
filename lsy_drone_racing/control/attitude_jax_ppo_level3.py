@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -10,12 +11,15 @@ from typing import TYPE_CHECKING, Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-from crazyflow.drones import load_params as load_hardware_params
+from crazyflow.dynamics import load_params as load_dynamics_params
 
 from lsy_drone_racing.control import Controller as BaseController
 from lsy_drone_racing.rl_training.checkpoint import METADATA_FILE
 from lsy_drone_racing.rl_training.environment import hover_action_bias, scale_action
-from lsy_drone_racing.rl_training.level3_checkpoint import load_level3_policy
+from lsy_drone_racing.rl_training.level3_checkpoint import (
+    checkpoint_gate_sequence,
+    load_level3_policy,
+)
 from lsy_drone_racing.rl_training.level3_config import SafetyGeometry
 from lsy_drone_racing.rl_training.level3_networks import Level3ActorCritic
 from lsy_drone_racing.rl_training.level3_observations import (
@@ -34,6 +38,8 @@ from lsy_drone_racing.rl_training.runtime import PROJECT_ROOT
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 def _batch_observation(obs: dict[str, Any]) -> dict[str, jax.Array]:
@@ -76,6 +82,14 @@ class Controller(BaseController):
         )
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         training_config = metadata["config"]
+        trained_sequence = checkpoint_gate_sequence(metadata)
+        track_sequence = tuple(int(gate) for gate in np.asarray(obs["gate_sequence"]).ravel())
+        if trained_sequence != track_sequence:
+            logger.warning(
+                "Checkpoint was trained on gate order %s, but this track uses %s",
+                trained_sequence,
+                track_sequence,
+            )
         self.max_episode_steps = int(training_config.get("max_episode_steps", 1500))
         self.history_length = int(training_config.get("history_length", 4))
         self.actor_input_mask = tuple(training_config.get("actor_input_mask", ()))
@@ -83,7 +97,7 @@ class Controller(BaseController):
         self.pos_limit_low = jnp.asarray([-3.0, -3.0, 0.0], dtype=jnp.float32)
         self.pos_limit_high = jnp.asarray([3.0, 3.0, 2.5], dtype=jnp.float32)
 
-        hardware = load_hardware_params(config.sim.drone)
+        hardware = load_dynamics_params(config.sim.dynamics, config.sim.drone)
         self.action_low = jnp.asarray(
             [-np.pi / 2, -np.pi / 2, -np.pi / 2, hardware["thrust_min"] * 4], dtype=jnp.float32
         )

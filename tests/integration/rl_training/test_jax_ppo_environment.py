@@ -57,9 +57,9 @@ def test_cpu_functional_rollout_mask_reset_and_full_update():
 
 
 @pytest.mark.integration
-def test_crazyflow_030_or_newer_within_supported_minor():
+def test_crazyflow_040_or_newer_within_supported_minor():
     installed = Version(version("crazyflow"))
-    assert Version("0.3.0") <= installed < Version("0.4.0")
+    assert Version("0.4.0") <= installed < Version("0.5.0")
 
 
 @pytest.mark.integration

@@ -276,7 +276,7 @@ def test_controller_is_deterministic_and_uses_training_observation(tmp_path: Pat
     (tmp_path / METADATA_FILE).write_text(json.dumps(metadata))
     config = ConfigDict(
         {
-            "sim": {"drone": "cf21B_500"},
+            "sim": {"drone": "cf21B_500", "dynamics": "first_principles"},
             "env": {"freq": 50},
             "controller": {"checkpoint": str(tmp_path)},
         }

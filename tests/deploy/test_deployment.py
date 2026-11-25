@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from crazyflow.drones import load_params as load_hardware_params
+from crazyflow.control import load_params as load_control_params
+from crazyflow.dynamics import load_params as load_dynamics_params
+from scipy.spatial.transform import Rotation as R
 
 from lsy_drone_racing.control.attitude_controller import AttitudeController
 from lsy_drone_racing.utils import load_config
@@ -23,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 try:
     import rclpy
-    from drone_estimators.ros_nodes.ros2_connector import ROSConnector
+    from drone_estimators.ros import ROSConnector
 
     from lsy_drone_racing.utils.crazyflie import Crazyflie
 except ImportError as e:
@@ -45,10 +47,10 @@ def parse_args() -> argparse.Namespace:
 def current_obs(ros_connector: Any, drone_name: str) -> dict[str, np.ndarray]:
     """Return the single-drone observation fields needed for return_to_start."""
     return {
-        "pos": ros_connector.pos[drone_name],
-        "quat": ros_connector.quat[drone_name],
-        "vel": ros_connector.vel[drone_name],
-        "ang_vel": ros_connector.ang_vel[drone_name],
+        "pos": ros_connector.est_pos[drone_name],
+        "quat": ros_connector.est_quat[drone_name],
+        "vel": ros_connector.est_vel[drone_name],
+        "ang_vel": ros_connector.est_ang_vel[drone_name],
     }
 
 
@@ -73,10 +75,11 @@ def state_circle(drone: Any, center: np.ndarray, height: float, radius: float, f
     t_start = time.perf_counter()
     for step in range(steps):
         alpha = (step + 1) / steps
-        action = np.zeros(13, dtype=np.float32)
+        action = np.zeros(16, dtype=np.float32)
         action[:3] = (1 - alpha) * start + alpha * target
         action[3:6] = (target - start) / takeoff_duration
-        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9], action[10:])
+        action[9:13] = R.from_euler("z", 0.0).as_quat()
+        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9:13], action[13:16])
         drone.send_external_pose()
         sleep_step(t_start, step, freq)
 
@@ -86,13 +89,14 @@ def state_circle(drone: Any, center: np.ndarray, height: float, radius: float, f
     t_start = time.perf_counter()
     for step in range(steps):
         theta = omega * step / freq
-        action = np.zeros(13, dtype=np.float32)
+        action = np.zeros(16, dtype=np.float32)
         action[:3] = target + np.array([radius * np.cos(theta), radius * np.sin(theta), 0.0])
         action[3:6] = [-radius * omega * np.sin(theta), radius * omega * np.cos(theta), 0.0]
         action[6:9] = [-radius * omega**2 * np.cos(theta), -radius * omega**2 * np.sin(theta), 0.0]
-        action[9] = theta + np.pi / 2
-        action[12] = omega
-        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9], action[10:])
+        yaw = theta + np.pi / 2
+        action[9:13] = R.from_euler("z", yaw).as_quat()
+        action[15] = omega
+        drone.send_action_state(action[:3], action[3:6], action[6:9], action[9:13], action[13:16])
         drone.send_external_pose()
         sleep_step(t_start, step, freq)
     logger.info("Finished state-command circle.")
@@ -146,7 +150,7 @@ def attitude_circle(
     """Take off and fly one small circle with the attitude controller."""
     takeoff_duration = 2.0
     circle_duration = 4.0
-    start = obs_connector.pos[drone_name].copy()
+    start = obs_connector.est_pos[drone_name].copy()
     override_attitude_reference(
         controller, start, height, radius, takeoff_duration, circle_duration
     )
@@ -197,7 +201,10 @@ def main() -> None:
     drone_name = f"cf{drone_config['id']}"
     radio_id = args.rank if args.radio_id is None else args.radio_id
     home_pos = np.array(config.env.track.drones[args.rank]["pos"], dtype=np.float32)
-    drone_params = load_hardware_params(drone_config["drone"])
+    drone_params = load_dynamics_params(config.sim.dynamics, drone_config["drone"])
+    control_params = load_control_params("mellinger", drone_config["drone"])["core"]
+    drone_params.update(pwm_min=control_params["pwm_min"])
+    drone_params.update(pwm_max=control_params["pwm_max"])
 
     logger.info("Initializing ROS for %s.", drone_name)
     rclpy.init()
@@ -219,7 +226,7 @@ def main() -> None:
         drone.connect()
         drone.reset(arm=True)
         state_circle(
-            drone, obs_connector.pos[drone_name].copy(), args.height, args.radius, args.freq
+            drone, obs_connector.est_pos[drone_name].copy(), args.height, args.radius, args.freq
         )
         logger.info("Returning to start after state-command test.")
         drone.return_to_start(home_pos, current_obs(obs_connector, drone_name), check_ok=rclpy.ok)
@@ -244,7 +251,7 @@ def main() -> None:
 
         logger.info("Connecting and resetting for high-level goto test.")
         drone.reset(arm=True)
-        target = obs_connector.pos[drone_name].copy()
+        target = obs_connector.est_pos[drone_name].copy()
         target[2] = args.height
         logger.info("Sending high-level goto to %s.", np.array2string(target, precision=3))
         drone.go_to(target, duration=3.0)

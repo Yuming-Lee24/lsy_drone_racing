@@ -204,7 +204,7 @@ class SegmentResetConfig:
 
     enabled: bool = False
     start_mode: str = "post_gate"
-    start_probabilities: tuple[float, float, float, float] = (0.25, 0.25, 0.25, 0.25)
+    start_probabilities: tuple[float, ...] = ()
     exit_distance_min: float = 0.25
     exit_distance_max: float = 0.35
     fallback_exit_distances: tuple[float, float] = (0.20, 0.12)
@@ -253,6 +253,7 @@ class SegmentResetConfig:
     corridor_entrance_distance_max_start: float = 0.18
     corridor_entrance_distance_min_end: float = 0.30
     corridor_entrance_distance_max_end: float = 0.45
+    corridor_min_entrance_depth: float = 0.10
     corridor_offset_start: float = 0.015
     corridor_offset_end: float = 0.08
     corridor_speed_min_start: float = 0.60
@@ -352,9 +353,9 @@ class Level3PPOConfig:
         if not 0.0 < self.target_kl:
             raise ValueError("target_kl must be positive")
         probabilities = self.segment_reset.start_probabilities
-        if len(probabilities) != 4 or any(value < 0.0 for value in probabilities):
-            raise ValueError("segment start_probabilities must contain four non-negative values")
-        if abs(sum(probabilities) - 1.0) > 1e-6:
+        if any(value < 0.0 for value in probabilities):
+            raise ValueError("segment start_probabilities must be non-negative")
+        if probabilities and abs(sum(probabilities) - 1.0) > 1e-6:
             raise ValueError("segment start_probabilities must sum to one")
         if self.segment_reset.enabled:
             if self.segment_reset.start_mode not in {

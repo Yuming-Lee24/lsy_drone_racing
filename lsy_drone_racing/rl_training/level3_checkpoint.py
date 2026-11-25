@@ -11,8 +11,11 @@ import jax
 import jax.numpy as jnp
 from flax import serialization
 
+from lsy_drone_racing.envs.utils import load_gate_order
 from lsy_drone_racing.rl_training.checkpoint import CHECKPOINT_FILE, METADATA_FILE, POLICY_FILE
 from lsy_drone_racing.rl_training.level3_observations import HISTORY_FRAME_DIM
+from lsy_drone_racing.rl_training.runtime import resolve_race_config
+from lsy_drone_racing.utils.utils import load_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -22,9 +25,11 @@ if TYPE_CHECKING:
     from lsy_drone_racing.rl_training.level3_environment import Level3RunnerState
 
 EMA_POLICY_FILE = "ema_policy.msgpack"
-LEVEL3_FORMAT_VERSION = 4
+LEVEL3_FORMAT_VERSION = 5
 LEVEL3_OBSERVATION_VERSION = 2
-LEVEL3_POLICY_FORMAT_VERSIONS = frozenset((2, 3, LEVEL3_FORMAT_VERSION))
+LEVEL3_POLICY_FORMAT_VERSIONS = frozenset((2, 3, 4, LEVEL3_FORMAT_VERSION))
+# Format 4 and older were trained on the 4-pass route under Crazyflow 0.3.
+LEGACY_GATE_SEQUENCE = (0, 1, 2, 3)
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
@@ -55,8 +60,11 @@ def _restore_prng_keys(encoded: Any, template: Any) -> Any:
     )
 
 
-def _metadata(config: Level3PPOConfig, total_steps: int, update: int) -> dict[str, Any]:
+def _metadata(
+    config: Level3PPOConfig, total_steps: int, update: int, gate_sequence: tuple[int, ...]
+) -> dict[str, Any]:
     return {
+        "gate_sequence": list(gate_sequence),
         "format_version": LEVEL3_FORMAT_VERSION,
         "observation_version": LEVEL3_OBSERVATION_VERSION,
         "model": "level3_structured_asymmetric_actor_critic",
@@ -65,6 +73,11 @@ def _metadata(config: Level3PPOConfig, total_steps: int, update: int) -> dict[st
         "update": int(update),
         "config": asdict(config),
     }
+
+
+def checkpoint_gate_sequence(metadata: dict[str, Any]) -> tuple[int, ...]:
+    """Return the 0-based gate order a checkpoint was trained on."""
+    return tuple(metadata.get("gate_sequence", LEGACY_GATE_SEQUENCE))
 
 
 def validate_level3_metadata(
@@ -79,15 +92,16 @@ def validate_level3_metadata(
     format_version = metadata.get("format_version")
     if format_version not in LEVEL3_POLICY_FORMAT_VERSIONS:
         raise ValueError(
-            "Incompatible checkpoint format: Level 3 V2 requires format_version 2, 3, or 4; "
+            "Incompatible checkpoint format: Level 3 V2 requires format_version 2 to 5; "
             "V1 policies cannot be loaded into the structured model."
         )
     if metadata.get("observation_version") != LEVEL3_OBSERVATION_VERSION:
         raise ValueError("Incompatible checkpoint observation version; expected Level 3 V2")
     if exact_resume and format_version != LEVEL3_FORMAT_VERSION:
         raise ValueError(
-            "Exact resume requires Level 3 checkpoint format_version=4 because the runner now "
-            "contains episode_start_kind; format_version 2/3 remains policy-only compatible."
+            f"Exact resume requires Level 3 checkpoint format_version={LEVEL3_FORMAT_VERSION} "
+            "because older runners hold Crazyflow 0.3 simulation state; older formats remain "
+            "policy-only compatible."
         )
     expected_config = json.loads(json.dumps(asdict(config))) if config is not None else None
     if expected_config is not None and metadata.get("config") != expected_config:
@@ -120,7 +134,10 @@ def save_level3_checkpoint(
     _atomic_write(directory / CHECKPOINT_FILE, serialization.to_bytes(_encode_prng_keys(payload)))
     _atomic_write(directory / POLICY_FILE, serialization.to_bytes(train_state.params))
     _atomic_write(directory / EMA_POLICY_FILE, serialization.to_bytes(train_state.ema_params))
-    metadata = json.dumps(_metadata(config, total_steps, update), indent=2, sort_keys=True)
+    track = load_config(resolve_race_config(config.config_file)).env.track
+    gate_sequence, _ = load_gate_order(track, len(track.gates))
+    metadata = _metadata(config, total_steps, update, tuple(int(gate) for gate in gate_sequence))
+    metadata = json.dumps(metadata, indent=2, sort_keys=True)
     _atomic_write(directory / METADATA_FILE, metadata.encode())
 
 

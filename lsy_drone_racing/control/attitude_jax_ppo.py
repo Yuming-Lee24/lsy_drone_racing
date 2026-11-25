@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-from crazyflow.drones import load_params as load_hardware_params
+from crazyflow.dynamics import load_params as load_dynamics_params
 
 from lsy_drone_racing.control import Controller as BaseController
 from lsy_drone_racing.rl_training.checkpoint import METADATA_FILE, load_policy
@@ -62,7 +62,7 @@ class Controller(BaseController):
         self.curriculum_stage = int(training_config.get("curriculum_stage", 2))
         hidden_dim = int(training_config.get("hidden_dim", 256))
 
-        hardware = load_hardware_params(config.sim.drone)
+        hardware = load_dynamics_params(config.sim.dynamics, config.sim.drone)
         self.action_low = jnp.asarray(
             [-np.pi / 2, -np.pi / 2, -np.pi / 2, hardware["thrust_min"] * 4], dtype=jnp.float32
         )
