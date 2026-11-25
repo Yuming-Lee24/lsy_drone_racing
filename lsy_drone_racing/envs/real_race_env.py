@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -22,6 +23,7 @@ from drone_estimators.ros import ROSConnector
 from gymnasium import Env
 from scipy.spatial.transform import Rotation as R
 
+from lsy_drone_racing.control.brake_rl import MIN_HEIGHT, BrakeRL
 from lsy_drone_racing.envs.utils import gate_passed, load_gate_order, load_track
 from lsy_drone_racing.utils.checks import check_drone_start_pos, check_race_track
 from lsy_drone_racing.utils.crazyflie import Crazyflie
@@ -120,6 +122,7 @@ class RealRaceCoreEnv:
         control_params = load_control_params("mellinger", drone_config["drone"])["core"]
         self.drone_parameters.update(pwm_min=control_params["pwm_min"])
         self.drone_parameters.update(pwm_max=control_params["pwm_max"])
+        self.brake = BrakeRL(self.drone_parameters)
         self.drone = Crazyflie.from_radio(
             radio_id=self.rank,
             radio_channel=drone_config["channel"],
@@ -338,10 +341,46 @@ class RealRaceCoreEnv:
                 gate_passed(drone_pos, drone_pos, gate_pos, gate_quat, reverse, (0.45, 0.45))
             )
 
+    def _brake(self, max_duration: float = 3.0, freq: float = 50.0) -> bool:
+        """Bring the drone to hover with the RL brake policy, at most for `max_duration` seconds.
+
+        Returns:
+            True if the drone was stopped, False if the policy handed over early.
+        """
+
+        def state() -> dict[str, NDArray]:
+            c, n = self._ros_connector, self.drone_name
+            return {
+                "pos": c.est_pos[n],
+                "quat": c.est_quat[n],
+                "vel": c.est_vel[n],
+                "ang_vel": c.est_ang_vel[n],
+            }
+
+        self.brake.reset(state())
+        t_next = time.perf_counter()
+        for _ in range(int(max_duration * freq)):
+            if not rclpy.ok() or not self.drone.is_connected:
+                return False
+            obs = state()
+            if self.brake.stopped(obs):
+                logger.info("RL brake stopped the drone")
+                return True
+            if obs["pos"][2] < MIN_HEIGHT - 0.05:
+                logger.warning("RL brake fell below its height limit, handing over")
+                return False
+            rpy, thrust = self.brake.compute_control(obs)
+            self.drone.send_action_attitude(rpy, thrust, self.drone_parameters)
+            t_next = max(t_next + 1.0 / freq, time.perf_counter())
+            time.sleep(max(0.0, t_next - time.perf_counter()))
+        logger.warning("RL brake did not stop the drone in time, handing over")
+        return False
+
     def close(self):
         """Close the environment.
 
-        If the drone has finished the track, it will try to return to the start position.
+        If the drone has taken off, the RL brake policy first stops it, then the drone tries to
+        return to the start position.
         Irrespective of succeeding or not, the drone will be stopped immediately afterwards or in
         case of errors, and close the connections to the ROSConnector. If the environment is
         closed while a KeyboardInterrupt is propagating (e.g. Ctrl-C during deployment), the drone
@@ -349,6 +388,11 @@ class RealRaceCoreEnv:
         """
         try:
             if self.data.taken_off and not isinstance(sys.exception(), KeyboardInterrupt):
+                stopped = False
+                try:
+                    stopped = self._brake()
+                except Exception:
+                    logger.exception("RL brake failed, handing over to return_to_start")
                 obs = self.obs()
                 self.drone.return_to_start(
                     self.drones.pos[self.rank],
@@ -356,6 +400,8 @@ class RealRaceCoreEnv:
                     check_ok=rclpy.ok,
                     # 0.15m above the frame of the highest gate
                     return_height=self.gates.pos[:, 2].max() + 0.36 + 0.15,
+                    # Already stopped by the RL brake: do not fly on along the residual velocity
+                    breaking_distance=0.0 if stopped else 1.0,
                 )
         finally:
             try:
