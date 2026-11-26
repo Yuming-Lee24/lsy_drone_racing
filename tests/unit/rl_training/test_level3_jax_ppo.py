@@ -601,7 +601,7 @@ def test_checkpoint_version_rejection_and_level3_controller_determinism(tmp_path
     expected_physical = expected_normalized * np.asarray((high - low) / 2.0) + np.asarray(
         (high + low) / 2.0
     )
-    np.testing.assert_allclose(first, expected_physical, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(first, expected_physical, rtol=1e-5, atol=1e-5)
     controller.episode_reset()
     second = controller.compute_control(obs)
     np.testing.assert_allclose(first, second, rtol=1e-6, atol=1e-6)
@@ -617,6 +617,42 @@ def test_checkpoint_version_rejection_and_level3_controller_determinism(tmp_path
     assert locked_action[YAW_ACTION_INDEX] == pytest.approx(0.0, abs=1e-7)
     np.testing.assert_allclose(locked_action[unlocked], first[unlocked], rtol=1e-6, atol=1e-6)
     assert float(locked._last_action[0, YAW_ACTION_INDEX]) == 0.0
+
+    # The jit-compiled control step matches the eager training-path computation over many steps.
+    metadata["config"]["lock_yaw"] = False
+    (tmp_path / METADATA_FILE).write_text(json.dumps(metadata), encoding="utf-8")
+    controller = Controller(obs, {}, controller_config)
+    assert {leaf.devices().pop().platform for leaf in jax.tree.leaves(controller.params)} == {"cpu"}
+    rng = np.random.default_rng(0)
+    memory, last_action = None, None
+    for step in range(6):
+        step_obs = {key: np.asarray(value).copy() for key, value in obs.items()}
+        step_obs["pos"] = step_obs["pos"] + 0.05 * step * rng.standard_normal(3)
+        step_obs["vel"] = step_obs["vel"] + 0.1 * rng.standard_normal(3)
+        batch = {key: jnp.asarray(value)[None] for key, value in step_obs.items()}
+        if memory is None:
+            memory = initialize_level3_memory(batch)
+        else:
+            memory, _ = advance_level3_memory(
+                memory, batch, batch, last_action, jnp.asarray([False])
+            )
+        step_actor = build_actor_observation(
+            batch,
+            memory,
+            jnp.asarray([step], dtype=jnp.int32),
+            config.max_episode_steps,
+            jnp.asarray([-3.0, -3.0, 0.0]),
+            jnp.asarray([3.0, 3.0, 2.5]),
+            config.geometry,
+        )
+        mean, _ = model.apply({"params": params}, step_actor, method=model.actor)
+        last_action = jnp.tanh(mean)
+        expected = np.asarray(last_action[0]) * np.asarray((high - low) / 2.0) + np.asarray(
+            (high + low) / 2.0
+        )
+        np.testing.assert_allclose(
+            controller.compute_control(step_obs), expected, rtol=1e-5, atol=1e-5
+        )
 
 
 @pytest.mark.unit

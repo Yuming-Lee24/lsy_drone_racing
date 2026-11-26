@@ -1,4 +1,8 @@
-"""Deterministic deployment controller for the structured Level 3 JAX PPO policy."""
+"""Deterministic deployment controller for the structured Level 3 JAX PPO policy.
+
+Each control step (memory update, observation, Actor, action scaling) is one jit call on the CPU,
+compiled in ``__init__``; single-sample inference is faster there than on a GPU.
+"""
 
 from __future__ import annotations
 
@@ -59,8 +63,13 @@ class Controller(BaseController):
     """Run only the deployment-safe Actor with training-identical memory and normalization."""
 
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
-        """Validate a V2 checkpoint and initialize the configured-length belief state."""
+        """Validate a V2 checkpoint, load it on the CPU and compile the control step."""
         super().__init__(obs, info, config)
+        self._device = jax.devices("cpu")[0]
+        with jax.default_device(self._device):
+            self._setup(obs, config)
+
+    def _setup(self, obs: dict[str, NDArray[np.floating]], config: dict):
         configured = config.controller.get("checkpoint", None)
         checkpoint = os.environ.get("LSY_LEVEL3_JAX_PPO_CHECKPOINT", configured)
         if checkpoint is None:
@@ -130,13 +139,45 @@ class Controller(BaseController):
             jax.random.key(int(training_config.get("seed", 42))), actor, _critic_template(1)
         )["params"]
         use_raw = bool(config.controller.get("raw_parameters", False))
-        self.params = load_level3_policy(checkpoint_path, template, ema=not use_raw)
-        self._actor = jax.jit(
-            lambda params, observation: model.apply(
-                {"params": params}, observation, method=model.actor
-            )
+        self.params = jax.device_put(
+            load_level3_policy(checkpoint_path, template, ema=not use_raw), self._device
         )
-        self._last_observation: dict[str, jax.Array] | None = None
+
+        def policy(params: Any, memory: Any, current: dict, steps: jax.Array) -> tuple:
+            actor_observation = build_actor_observation(
+                current,
+                memory,
+                steps,
+                self.max_episode_steps,
+                self.pos_limit_low,
+                self.pos_limit_high,
+                self.geometry,
+            )
+            actor_observation = mask_actor_observation(actor_observation, self.actor_input_mask)
+            mean, _ = model.apply({"params": params}, actor_observation, method=model.actor)
+            normalized_action = deterministic_action(mean)[0]
+            if self.lock_yaw:
+                normalized_action = normalized_action.at[YAW_ACTION_INDEX].set(0.0)
+            physical_action = scale_action(normalized_action, self.action_low, self.action_high)
+            return memory, normalized_action[None], physical_action
+
+        def first_step(params: Any, current: dict, steps: jax.Array) -> tuple:
+            memory = initialize_level3_memory(current, history_length=self.history_length)
+            return policy(params, memory, current, steps)
+
+        def next_step(
+            params: Any, memory: Any, current: dict, last_action: jax.Array, steps: jax.Array
+        ) -> tuple:
+            memory, _ = advance_level3_memory(
+                memory, current, current, last_action, jnp.asarray([False])
+            )
+            return policy(params, memory, current, steps)
+
+        self._first_step = jax.jit(first_step)
+        self._next_step = jax.jit(next_step)
+        steps = jnp.zeros((1,), dtype=jnp.int32)
+        memory, last_action, _ = self._first_step(self.params, initial, steps)
+        jax.block_until_ready(self._next_step(self.params, memory, initial, last_action, steps))
         self._last_action: jax.Array | None = None
         self._steps = 0
 
@@ -147,32 +188,17 @@ class Controller(BaseController):
 
         A ``lock_yaw`` checkpoint always commands 0 rad yaw, exactly as during training.
         """
-        current = _batch_observation(obs)
-        if self._last_observation is None:
-            self.observation_memory = initialize_level3_memory(
-                current, history_length=self.history_length
-            )
-        else:
-            self.observation_memory, _ = advance_level3_memory(
-                self.observation_memory, current, current, self._last_action, jnp.asarray([False])
-            )
-        actor_observation = build_actor_observation(
-            current,
-            self.observation_memory,
-            jnp.asarray([self._steps], dtype=jnp.int32),
-            self.max_episode_steps,
-            self.pos_limit_low,
-            self.pos_limit_high,
-            self.geometry,
-        )
-        actor_observation = mask_actor_observation(actor_observation, self.actor_input_mask)
-        mean, _ = self._actor(self.params, actor_observation)
-        normalized_action = deterministic_action(mean)[0]
-        if self.lock_yaw:
-            normalized_action = normalized_action.at[YAW_ACTION_INDEX].set(0.0)
-        physical_action = scale_action(normalized_action, self.action_low, self.action_high)
-        self._last_observation = current
-        self._last_action = normalized_action[None]
+        with jax.default_device(self._device):
+            current = _batch_observation(obs)
+            steps = jnp.asarray([self._steps], dtype=jnp.int32)
+            if self._last_action is None:
+                memory, last_action, physical_action = self._first_step(self.params, current, steps)
+            else:
+                memory, last_action, physical_action = self._next_step(
+                    self.params, self.observation_memory, current, self._last_action, steps
+                )
+        self.observation_memory = memory
+        self._last_action = last_action
         self._steps += 1
         return np.asarray(physical_action, dtype=np.float32)
 
@@ -190,6 +216,5 @@ class Controller(BaseController):
 
     def episode_reset(self):
         """Clear temporal state before a new independently seeded race."""
-        self._last_observation = None
         self._last_action = None
         self._steps = 0
