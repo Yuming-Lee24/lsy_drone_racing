@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import fire
 import gymnasium
+import numpy as np
 import rclpy
 
 from lsy_drone_racing.envs.race_core import RaceCoreEnv
@@ -86,6 +87,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         controller_path = control_path / config.controller.file
         controller_cls = load_controller(controller_path)
         controller = controller_cls(obs, info, config)
+        max_speed = 0.0
         start_time = time.perf_counter()
         while rclpy.ok():
             t_loop = time.perf_counter()
@@ -93,6 +95,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
             obs = {k: v[0] for k, v in obs.items()}
             action = controller.compute_control(obs, info)
             next_obs, reward, terminated, truncated, info = env.step(action)
+            max_speed = max(max_speed, float(np.linalg.norm(next_obs["vel"])))
             if render:
                 viewer.update(next_obs["pos"], next_obs["quat"])
             controller_finished = controller.step_callback(
@@ -108,6 +111,7 @@ def main(config: str = "level2.toml", controller: str | None = None, render: boo
         ep_time = time.perf_counter() - start_time
         finished_track = next_obs["n_gates_passed"] == next_obs["gate_sequence"].shape[0]
         logger.info(f"Track time: {ep_time:.3f}s" if finished_track else "Task not completed")
+        logger.info(f"Max speed: {max_speed:.2f} m/s")
     finally:
         env.close()
         if viewer is not None:
