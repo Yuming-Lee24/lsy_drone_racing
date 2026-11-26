@@ -828,6 +828,9 @@ def test_yaw_lock_masks_log_probability_entropy_and_profile():
     assert locked.lock_yaw and not memory.lock_yaw
     assert locked.yaw_anneal_timesteps == 120_000_000 and memory.yaw_anneal_timesteps == 0
     assert replace(locked, profile=memory.profile, lock_yaw=False, yaw_anneal_timesteps=0) == memory
+    hard = get_level3_profile("level3_v22_yaw_lock_hard")
+    assert replace(hard, profile=locked.profile, yaw_anneal_timesteps=120_000_000) == locked
+    assert hard.lock_yaw and hard.yaw_anneal_timesteps == 0
 
 
 @pytest.mark.unit

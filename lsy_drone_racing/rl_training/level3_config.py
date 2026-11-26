@@ -478,6 +478,7 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v20_memory",
     "level3_v21_fullinfo",
     "level3_v22_yaw_lock",
+    "level3_v22_yaw_lock_hard",
     "level3_abl_base",
     "level3_v3_reward",
     "level3_v3_pregate",
@@ -662,12 +663,13 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
         "level3_v20_memory",
         "level3_v21_fullinfo",
         "level3_v22_yaw_lock",
+        "level3_v22_yaw_lock_hard",
     ):
         config = Level3PPOConfig(
             profile=name,
             history_length=4 if name == "level3_v19_tight" else 25,
             sensor_range=10.0 if name == "level3_v21_fullinfo" else None,
-            lock_yaw=name == "level3_v22_yaw_lock",
+            lock_yaw=name.startswith("level3_v22_yaw_lock"),
             yaw_anneal_timesteps=120_000_000 if name == "level3_v22_yaw_lock" else 0,
             learning_rate_start=5e-5,
             learning_rate_end=1e-5,

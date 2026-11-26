@@ -348,7 +348,8 @@ time. The ignored report is
 `clip(1 - steps / 120M, 0, 1)` before scaling and stores the scaled action in observation memory and
 reward state; yaw stays in PPO log-probabilities and entropy only while that scale is positive.
 Validation/evaluation run at progress 1 and are fully locked (0 rad world yaw), like the controller,
-which honors `lock_yaw` from checkpoint metadata. See `LEVEL3_V2.md` for semantics.
+which honors `lock_yaw` from checkpoint metadata. See `LEVEL3_V2.md` for semantics. `level3_v22_yaw_lock_hard` is the same
+profile with `yaw_anneal_timesteps=0`, for continuing from an already locked policy.
 
 ## Historical Level 2 V2 research notes
 
@@ -513,6 +514,11 @@ pixi run -e gpu train-level3-jax-ppo \
 pixi run -e gpu train-level3-jax-ppo --profile level3_v22_yaw_lock \
   --initialize-policy saves/jax_ppo/level3_v20_memory_5pass_r2/latest --initialize-policy-ema \
   --total-timesteps 400000000 --output saves/jax_ppo/level3_v22_yaw_lock
+
+# Second round from the locked policy: hard lock, so yaw is not re-opened.
+pixi run -e gpu train-level3-jax-ppo --profile level3_v22_yaw_lock_hard \
+  --initialize-policy saves/jax_ppo/level3_v22_yaw_lock/latest --initialize-policy-ema \
+  --total-timesteps 400000000 --output saves/jax_ppo/level3_v22_yaw_lock_hard
 ```
 
 Compilation time must be reported separately from steady throughput. If a V2 change fails the 2x

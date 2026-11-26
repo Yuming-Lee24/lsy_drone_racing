@@ -336,8 +336,15 @@ validation success is expected to be low. Network shapes are unchanged, so v20 c
 initialize it. The controller reads `lock_yaw` from checkpoint metadata (missing means False) and
 commands 0 rad yaw; exact resume treats missing fields as unlocked.
 
+`level3_v22_yaw_lock_hard` is identical except `yaw_anneal_timesteps=0`. Policy initialization
+restarts the step count, so continuing an already locked policy with `level3_v22_yaw_lock` would
+re-open yaw while its untrained yaw output is still saturated; use the hard profile instead.
+
 ```bash
 pixi run -e gpu train-level3-jax-ppo --profile level3_v22_yaw_lock \
   --initialize-policy saves/jax_ppo/level3_v20_memory_5pass_r2/latest --initialize-policy-ema \
   --total-timesteps 400000000 --output saves/jax_ppo/level3_v22_yaw_lock
+pixi run -e gpu train-level3-jax-ppo --profile level3_v22_yaw_lock_hard \
+  --initialize-policy saves/jax_ppo/level3_v22_yaw_lock/latest --initialize-policy-ema \
+  --total-timesteps 400000000 --output saves/jax_ppo/level3_v22_yaw_lock_hard
 ```
