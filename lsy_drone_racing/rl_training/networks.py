@@ -1,4 +1,4 @@
-"""Flax actor-critic network and bounded Gaussian policy utilities."""
+"""Flax actor-critic network and bounded Gaussian policy utilities with optional action masks."""
 
 from __future__ import annotations
 
@@ -52,31 +52,48 @@ class ActorCritic(nn.Module):
         return mean, log_std, value
 
 
-def gaussian_log_probability(raw_action: Array, mean: Array, log_std: Array) -> Array:
-    """Log probability of an unsquashed diagonal Gaussian sample."""
+def gaussian_log_probability(
+    raw_action: Array, mean: Array, log_std: Array, action_mask: Array | None = None
+) -> Array:
+    """Log probability of an unsquashed diagonal Gaussian sample.
+
+    ``action_mask`` optionally excludes action dimensions (weight 0) from the sum.
+    """
     inverse_variance = jnp.exp(-2.0 * log_std)
-    return jnp.sum(
-        -0.5 * ((raw_action - mean) ** 2 * inverse_variance + 2.0 * log_std + LOG_2PI), axis=-1
+    terms = -0.5 * ((raw_action - mean) ** 2 * inverse_variance + 2.0 * log_std + LOG_2PI)
+    if action_mask is not None:
+        terms = terms * action_mask
+    return jnp.sum(terms, axis=-1)
+
+
+def squashed_log_probability(
+    raw_action: Array, mean: Array, log_std: Array, action_mask: Array | None = None
+) -> Array:
+    """Log probability after a tanh bijector, including its Jacobian, over unmasked dims."""
+    action = jnp.tanh(raw_action)
+    correction = jnp.log(jnp.maximum(1.0 - action * action, 1e-6))
+    if action_mask is not None:
+        correction = correction * action_mask
+    return gaussian_log_probability(raw_action, mean, log_std, action_mask) - jnp.sum(
+        correction, axis=-1
     )
 
 
-def squashed_log_probability(raw_action: Array, mean: Array, log_std: Array) -> Array:
-    """Log probability after a tanh bijector, including its Jacobian."""
-    action = jnp.tanh(raw_action)
-    correction = jnp.sum(jnp.log(jnp.maximum(1.0 - action * action, 1e-6)), axis=-1)
-    return gaussian_log_probability(raw_action, mean, log_std) - correction
+def gaussian_entropy(log_std: Array, action_mask: Array | None = None) -> Array:
+    """Entropy of the base diagonal Gaussian used for PPO regularization, over unmasked dims."""
+    terms = log_std + 0.5 * (1.0 + LOG_2PI)
+    if action_mask is not None:
+        terms = terms * action_mask
+    return jnp.sum(terms, axis=-1)
 
 
-def gaussian_entropy(log_std: Array) -> Array:
-    """Entropy of the base diagonal Gaussian used for PPO regularization."""
-    return jnp.sum(log_std + 0.5 * (1.0 + LOG_2PI), axis=-1)
-
-
-def sample_action(mean: Array, log_std: Array, key: Array) -> tuple[Array, Array, Array]:
+def sample_action(
+    mean: Array, log_std: Array, key: Array, action_mask: Array | None = None
+) -> tuple[Array, Array, Array]:
     """Sample a bounded action and return action, raw sample, and corrected log probability."""
     raw_action = mean + jnp.exp(log_std) * jax.random.normal(key, mean.shape)
     action = jnp.tanh(raw_action)
-    return action, raw_action, squashed_log_probability(raw_action, mean, log_std)
+    return action, raw_action, squashed_log_probability(raw_action, mean, log_std, action_mask)
 
 
 def deterministic_action(mean: Array) -> Array:

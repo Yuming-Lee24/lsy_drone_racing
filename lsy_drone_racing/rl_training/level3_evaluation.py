@@ -13,7 +13,10 @@ import jax
 import numpy as np
 
 from lsy_drone_racing.rl_training.evaluation import wilson_interval
-from lsy_drone_racing.rl_training.level3_checkpoint import load_level3_policy
+from lsy_drone_racing.rl_training.level3_checkpoint import (
+    load_level3_policy,
+    validate_level3_metadata,
+)
 from lsy_drone_racing.rl_training.level3_config import LEVEL3_PROFILE_NAMES, get_level3_profile
 from lsy_drone_racing.rl_training.level3_environment import (
     initialize_level3_runner,
@@ -279,7 +282,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    """Load one V2 checkpoint and print the fixed-seed report."""
+    """Load one V2 checkpoint and print the fixed-seed report.
+
+    The yaw lock is taken from the checkpoint metadata, not from ``--profile``; evaluation runs at
+    curriculum progress 1, so an annealed lock is fully locked as in deployment.
+    """
     args = _parser().parse_args()
     config = get_level3_profile(args.profile).with_overrides(
         device=args.device, config_file=args.config_file
@@ -300,6 +307,11 @@ def main() -> None:
     )
     params = load_level3_policy(args.checkpoint, template, ema=not args.raw)
     env.close()
+    stored_config = validate_level3_metadata(args.checkpoint).get("config") or {}
+    config = config.with_overrides(
+        lock_yaw=bool(stored_config.get("lock_yaw", False)),
+        yaw_anneal_timesteps=int(stored_config.get("yaw_anneal_timesteps", 0)),
+    )
     result = evaluate_level3_params(
         params, config, episodes=args.episodes, batch_size=args.batch_size, seed=args.seed
     )

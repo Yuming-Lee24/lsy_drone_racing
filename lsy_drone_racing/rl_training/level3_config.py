@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+YAW_ACTION_INDEX = 2
+
 
 @dataclass(frozen=True)
 class SafetyGeometry:
@@ -315,6 +317,8 @@ class Level3PPOConfig:
     sensor_range: float | None = None
     actor_input_mask: tuple[str, ...] = ()
     allow_policy_initialization: bool = False
+    lock_yaw: bool = False
+    yaw_anneal_timesteps: int = 0
 
     @property
     def batch_size(self) -> int:
@@ -348,6 +352,12 @@ class Level3PPOConfig:
             raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
         if self.history_length <= 0:
             raise ValueError("history_length must be positive")
+        if self.yaw_anneal_timesteps < 0:
+            raise ValueError("yaw_anneal_timesteps must be non-negative")
+        if self.yaw_anneal_timesteps and not self.lock_yaw:
+            raise ValueError("yaw_anneal_timesteps requires lock_yaw")
+        if self.yaw_anneal_timesteps > self.curriculum_timesteps:
+            raise ValueError("yaw_anneal_timesteps must not exceed curriculum_timesteps")
         if self.entity_dim % self.attention_heads:
             raise ValueError("entity_dim must be divisible by attention_heads")
         if not 0.0 < self.target_kl:
@@ -467,6 +477,7 @@ LEVEL3_PROFILE_NAMES = (
     "level3_v19_tight",
     "level3_v20_memory",
     "level3_v21_fullinfo",
+    "level3_v22_yaw_lock",
     "level3_abl_base",
     "level3_v3_reward",
     "level3_v3_pregate",
@@ -646,11 +657,18 @@ def get_level3_profile(name: str = "level3_v2") -> Level3PPOConfig:
             reward=Level3V18RewardCoefficients(),
             level_replay=LevelReplayConfig(enabled=name == "level3_v18_plr"),
         )
-    elif name in ("level3_v19_tight", "level3_v20_memory", "level3_v21_fullinfo"):
+    elif name in (
+        "level3_v19_tight",
+        "level3_v20_memory",
+        "level3_v21_fullinfo",
+        "level3_v22_yaw_lock",
+    ):
         config = Level3PPOConfig(
             profile=name,
             history_length=4 if name == "level3_v19_tight" else 25,
             sensor_range=10.0 if name == "level3_v21_fullinfo" else None,
+            lock_yaw=name == "level3_v22_yaw_lock",
+            yaw_anneal_timesteps=120_000_000 if name == "level3_v22_yaw_lock" else 0,
             learning_rate_start=5e-5,
             learning_rate_end=1e-5,
             entropy_coef=0.001,

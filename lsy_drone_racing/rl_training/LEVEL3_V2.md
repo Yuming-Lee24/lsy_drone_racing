@@ -316,3 +316,28 @@ peak memory. XLA rollout/optimizer compilation was 11.395/1.367 seconds and is e
 steady throughput. The report is ignored at
 `saves/jax_ppo/performance/level3_v3_route_corridor_jax_10m.json`. Run exactly 382 updates for the
 first 50M decision point; do not infer formal Level 3 success from corridor metrics.
+
+## Yaw-locked fine-tuning
+
+`level3_v22_yaw_lock` equals `level3_v20_memory` (25-frame history, V19 reward, same PPO) plus
+`lock_yaw=True` and `yaw_anneal_timesteps=120_000_000`. The 5-pass v20 policy saturates its yaw
+command at +/-90 deg and swings real yaw about 190 deg per lap, which is unsafe on hardware; hard
+locking it immediately dropped rollout success to about 0%, so yaw authority is annealed instead.
+The transition multiplies the normalized yaw (index 2) by
+`s = clip(1 - steps / yaw_anneal_timesteps, 0, 1)` before `scale_action`, with
+`steps = curriculum_progress * curriculum_timesteps` derived from total training steps (exact
+resume reproduces it). The scaled action is the one stored as previous action and reward last
+action. `yaw_anneal_timesteps=0` is a hard lock (`s=0`); it must not exceed
+`curriculum_timesteps`. While `s>0` the yaw dimension is in the behavior and update
+log-probabilities and the entropy bonus; once `s=0` it is excluded (Gaussian and tanh Jacobian
+terms) through a per-sample weight stored in the rollout batch. Rollouts log `yaw_authority`.
+Validation and evaluation force curriculum progress 1, so they are always fully locked and early
+validation success is expected to be low. Network shapes are unchanged, so v20 checkpoints
+initialize it. The controller reads `lock_yaw` from checkpoint metadata (missing means False) and
+commands 0 rad yaw; exact resume treats missing fields as unlocked.
+
+```bash
+pixi run -e gpu train-level3-jax-ppo --profile level3_v22_yaw_lock \
+  --initialize-policy saves/jax_ppo/level3_v20_memory_5pass_r2/latest --initialize-policy-ema \
+  --total-timesteps 400000000 --output saves/jax_ppo/level3_v22_yaw_lock
+```

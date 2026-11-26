@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from lsy_drone_racing.rl_training.environment import scale_action
 from lsy_drone_racing.rl_training.level3_algorithm import (
     Level3TrainState,
     build_level3_optimizer,
@@ -17,7 +18,7 @@ from lsy_drone_racing.rl_training.level3_checkpoint import (
     restore_level3_checkpoint,
     save_level3_checkpoint,
 )
-from lsy_drone_racing.rl_training.level3_config import get_level3_profile
+from lsy_drone_racing.rl_training.level3_config import YAW_ACTION_INDEX, get_level3_profile
 from lsy_drone_racing.rl_training.level3_environment import (
     initialize_level3_runner,
     make_level3_evaluation_collector,
@@ -49,7 +50,11 @@ if TYPE_CHECKING:
 
 
 def run_level3_smoke(
-    device: str, num_envs: int, max_episode_steps: int = 1500, profile: str = "level3_v2"
+    device: str,
+    num_envs: int,
+    max_episode_steps: int = 1500,
+    profile: str = "level3_v2",
+    curriculum_progress: float = 0.0,
 ) -> tuple:
     """Compile the complete structured rollout and one PPO update."""
     config = get_level3_profile(profile).with_overrides(
@@ -74,7 +79,7 @@ def run_level3_smoke(
         apply_fn=model.apply, params=params, tx=build_level3_optimizer(config)
     )
     runner, rollout, metrics = make_level3_rollout_collector(env, model, config)(
-        runner, state.params, jnp.asarray(0.0)
+        runner, state.params, jnp.asarray(curriculum_progress)
     )
     state, update_metrics = make_level3_ppo_update(config)(state, rollout, jax.random.key(99))
     jax.block_until_ready(state.step)
@@ -694,3 +699,74 @@ def test_level3_full_sensor_range_exposes_true_track_from_reset():
     default = get_level3_profile("level3_v20_memory")
     assert default.sensor_range is None
     env.close()
+
+
+@pytest.mark.integration
+def test_level3_yaw_anneal_scales_stored_yaw_and_locks_evaluation():
+    config = get_level3_profile("level3_v22_yaw_lock").with_overrides(
+        device="cpu", num_envs=4, num_steps=2, num_minibatches=1, total_timesteps=8
+    )
+    env = create_level3_environment(config)
+    runner = initialize_level3_runner(env, config, seed=11)
+    action = jnp.full((config.num_envs, 4), 0.5, dtype=jnp.float32)
+
+    def at_progress(progress: float) -> object:
+        return runner.replace(
+            environment_data=runner.environment_data.replace(
+                curriculum_progress=jnp.asarray(progress, dtype=jnp.float32)
+            )
+        )
+
+    hard = config.with_overrides(yaw_anneal_timesteps=0)
+    for step_config, progress, scale in (
+        (config, 0.0, 1.0),
+        (config, 60e6 / config.curriculum_timesteps, 0.5),
+        (config, 1.0, 0.0),
+        (hard, 0.0, 0.0),
+    ):
+        transition = make_level3_functional_step(env, step_config)(at_progress(progress), action)
+        active = ~transition.metrics.done
+        expected = action.at[:, YAW_ACTION_INDEX].multiply(scale)
+        np.testing.assert_allclose(
+            transition.next_runner.observation_memory.previous_action[active],
+            expected[active],
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            transition.next_runner.reward_state.last_action[active], expected[active], atol=1e-6
+        )
+        np.testing.assert_allclose(transition.metrics.yaw_authority, scale, atol=1e-6)
+    low = jnp.asarray(env.single_action_space.low)
+    high = jnp.asarray(env.single_action_space.high)
+    locked_action = action.at[:, YAW_ACTION_INDEX].set(0.0)
+    assert float(scale_action(locked_action, low, high)[0, YAW_ACTION_INDEX]) == 0.0
+
+    model = create_level3_model(env, config)
+    params = initialize_level3_parameters(
+        model, runner.actor_observation, runner.critic_observation, config.seed
+    )
+    final, metrics = make_level3_evaluation_collector(env, model, config)(at_progress(0.0), params)
+    np.testing.assert_array_equal(metrics.yaw_authority, 0.0)
+    np.testing.assert_array_equal(
+        final.observation_memory.previous_action[:, YAW_ACTION_INDEX], 0.0
+    )
+    env.close()
+
+    _, rollout, metrics, state, update_metrics = run_level3_smoke(
+        "cpu", 2, 1, profile="level3_v22_yaw_lock"
+    )
+    assert rollout.yaw_weight.shape == rollout.reward.shape
+    np.testing.assert_array_equal(rollout.yaw_weight, 1.0)
+    np.testing.assert_array_equal(metrics.yaw_authority, 1.0)
+    assert int(state.step) == 1
+    assert np.isfinite(float(update_metrics["loss"]))
+    _, rollout, metrics, _, update_metrics = run_level3_smoke(
+        "cpu", 2, 1, profile="level3_v22_yaw_lock", curriculum_progress=0.5
+    )
+    np.testing.assert_array_equal(rollout.yaw_weight, 0.0)
+    np.testing.assert_array_equal(metrics.yaw_authority, 0.0)
+    assert np.isfinite(float(update_metrics["loss"]))
+    assert np.all(np.isfinite(rollout.log_probability))
+    _, rollout, metrics, _, _ = run_level3_smoke("cpu", 2, 1, profile="level3_v20_memory")
+    assert rollout.yaw_weight is None
+    np.testing.assert_array_equal(metrics.yaw_authority, 1.0)

@@ -17,7 +17,12 @@ from lsy_drone_racing.envs.race_core import (
     truncated,
 )
 from lsy_drone_racing.rl_training.environment import scale_action
-from lsy_drone_racing.rl_training.level3_algorithm import Level3RolloutBatch
+from lsy_drone_racing.rl_training.level3_algorithm import (
+    Level3RolloutBatch,
+    level3_yaw_authority,
+    yaw_action_weights,
+)
+from lsy_drone_racing.rl_training.level3_config import YAW_ACTION_INDEX
 from lsy_drone_racing.rl_training.level3_level_replay import (
     initialize_level_replay,
     sample_level_replay,
@@ -113,6 +118,7 @@ class Level3RolloutMetrics:
     episode_components: Array
     episode_length: Array
     replayed: Array
+    yaw_authority: Array
 
 
 @struct.dataclass
@@ -265,7 +271,12 @@ def _build_level3_environment_step(
     mixed_segment: bool,
     level_replay: bool = False,
 ) -> Callable[[Level3RunnerState, Array], Level3EnvironmentTransition]:
-    """Build the pure transition used inside rollout and evaluation scans."""
+    """Build the pure transition used inside rollout and evaluation scans.
+
+    With ``config.lock_yaw`` the normalized yaw command is multiplied by the annealed yaw
+    authority (0 once annealed, and always 0 at curriculum progress 1) before scaling; the scaled
+    action is what observation memory and reward store.
+    """
     apply_action = env.build_apply_action_fn()
     classify_contacts = env.build_contact_classification_fn()
     step_simulation = env.sim.build_step_fn()
@@ -367,6 +378,12 @@ def _build_level3_environment_step(
         )
 
     def transition(carry: Level3RunnerState, action: Array) -> Level3EnvironmentTransition:
+        yaw_authority = level3_yaw_authority(carry.environment_data.curriculum_progress, config)
+        if config.lock_yaw:
+            yaw = action[..., YAW_ACTION_INDEX]
+            action = action.at[..., YAW_ACTION_INDEX].set(
+                jnp.where(yaw_authority > 0.0, yaw * yaw_authority, 0.0)
+            )
         (
             terminal_data,
             terminal_belief,
@@ -528,6 +545,7 @@ def _build_level3_environment_step(
                 episode_components=reward_transition.completed_components,
                 episode_length=reward_transition.completed_length,
                 replayed=reward_transition.done & (carry.level_replay.episode_slot >= 0),
+                yaw_authority=jnp.broadcast_to(yaw_authority, reward_transition.done.shape),
             ),
         )
 
@@ -555,7 +573,11 @@ def make_level3_rollout_collector(
     *,
     deterministic: bool = False,
 ) -> Callable[[Level3RunnerState, Any, Array], tuple[Level3RunnerState, Any, Any]]:
-    """Compile policy, simulation, observation, reward, reset, and bootstrap in one scan."""
+    """Compile policy, simulation, observation, reward, reset, and bootstrap in one scan.
+
+    With ``lock_yaw`` the yaw dimension enters the behavior log probability only while the yaw
+    authority is positive; that per-sample weight is stored in the batch for the PPO update.
+    """
     environment_transition = _build_level3_environment_step(
         env,
         config,
@@ -579,12 +601,23 @@ def make_level3_rollout_collector(
             mean, log_std, value = model.apply(
                 {"params": params}, carry.actor_observation, carry.critic_observation
             )
+            yaw_weight = action_mask = None
+            if config.lock_yaw:
+                yaw_authority = level3_yaw_authority(
+                    carry.environment_data.curriculum_progress, config
+                )
+                yaw_weight = jnp.broadcast_to(
+                    (yaw_authority > 0.0).astype(jnp.float32), value.shape
+                )
+                action_mask = yaw_action_weights(yaw_weight)
             if deterministic:
                 raw_action = mean
                 action = deterministic_action(mean)
-                log_probability = squashed_log_probability(raw_action, mean, log_std)
+                log_probability = squashed_log_probability(raw_action, mean, log_std, action_mask)
             else:
-                action, raw_action, log_probability = sample_action(mean, log_std, action_key)
+                action, raw_action, log_probability = sample_action(
+                    mean, log_std, action_key, action_mask
+                )
             transition = environment_transition(carry, action)
             bootstrap_value = model.apply(
                 {"params": params},
@@ -603,6 +636,7 @@ def make_level3_rollout_collector(
                     bootstrap_value=bootstrap_value,
                     terminated=transition.terminated,
                     truncated=transition.truncated,
+                    yaw_weight=yaw_weight,
                 ),
                 metrics=transition.metrics,
             )
@@ -663,6 +697,7 @@ def summarize_level3_rollout(metrics: Level3RolloutMetrics, num_passes: int) -> 
         "completed_difficulty": jnp.sum(metrics.difficulty) / denominator,
         "current_gate_visited_step_rate": jnp.mean(metrics.current_gate_visited),
         "unsafe_near_plane_stall_step_rate": jnp.mean(metrics.unsafe_near_plane_stall),
+        "yaw_authority": jnp.mean(metrics.yaw_authority),
         "level_replay/replayed_fraction": jnp.sum(metrics.replayed) / denominator,
         "level_replay/fresh_success_rate": jnp.sum(metrics.success & ~metrics.replayed)
         / jnp.maximum(jnp.sum(metrics.done & ~metrics.replayed), 1),

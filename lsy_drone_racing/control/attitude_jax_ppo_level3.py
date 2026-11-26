@@ -20,7 +20,7 @@ from lsy_drone_racing.rl_training.level3_checkpoint import (
     checkpoint_gate_sequence,
     load_level3_policy,
 )
-from lsy_drone_racing.rl_training.level3_config import SafetyGeometry
+from lsy_drone_racing.rl_training.level3_config import YAW_ACTION_INDEX, SafetyGeometry
 from lsy_drone_racing.rl_training.level3_networks import Level3ActorCritic
 from lsy_drone_racing.rl_training.level3_observations import (
     DIRECT_GEOMETRY_DIM,
@@ -93,6 +93,7 @@ class Controller(BaseController):
         self.max_episode_steps = int(training_config.get("max_episode_steps", 1500))
         self.history_length = int(training_config.get("history_length", 4))
         self.actor_input_mask = tuple(training_config.get("actor_input_mask", ()))
+        self.lock_yaw = bool(training_config.get("lock_yaw", False))
         self.geometry = SafetyGeometry(**training_config.get("geometry", {}))
         self.pos_limit_low = jnp.asarray([-3.0, -3.0, 0.0], dtype=jnp.float32)
         self.pos_limit_high = jnp.asarray([3.0, 3.0, 2.5], dtype=jnp.float32)
@@ -142,7 +143,10 @@ class Controller(BaseController):
     def compute_control(
         self, obs: dict[str, NDArray[np.floating]], info: dict | None = None
     ) -> NDArray[np.floating]:
-        """Return deterministic ``[roll, pitch, yaw, collective thrust]`` control."""
+        """Return deterministic ``[roll, pitch, yaw, collective thrust]`` control.
+
+        A ``lock_yaw`` checkpoint always commands 0 rad yaw, exactly as during training.
+        """
         current = _batch_observation(obs)
         if self._last_observation is None:
             self.observation_memory = initialize_level3_memory(
@@ -164,6 +168,8 @@ class Controller(BaseController):
         actor_observation = mask_actor_observation(actor_observation, self.actor_input_mask)
         mean, _ = self._actor(self.params, actor_observation)
         normalized_action = deterministic_action(mean)[0]
+        if self.lock_yaw:
+            normalized_action = normalized_action.at[YAW_ACTION_INDEX].set(0.0)
         physical_action = scale_action(normalized_action, self.action_low, self.action_high)
         self._last_observation = current
         self._last_action = normalized_action[None]

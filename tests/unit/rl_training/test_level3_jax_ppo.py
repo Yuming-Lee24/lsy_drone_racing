@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import jax
@@ -18,7 +19,9 @@ from lsy_drone_racing.rl_training.level3_algorithm import (
     Level3TrainState,
     build_level3_optimizer,
     level3_generalized_advantage_estimate,
+    level3_yaw_authority,
     make_level3_ppo_update,
+    yaw_action_weights,
 )
 from lsy_drone_racing.rl_training.level3_checkpoint import (
     LEVEL3_FORMAT_VERSION,
@@ -28,7 +31,7 @@ from lsy_drone_racing.rl_training.level3_checkpoint import (
     save_level3_checkpoint,
     validate_level3_metadata,
 )
-from lsy_drone_racing.rl_training.level3_config import get_level3_profile
+from lsy_drone_racing.rl_training.level3_config import YAW_ACTION_INDEX, get_level3_profile
 from lsy_drone_racing.rl_training.level3_networks import Level3ActorCritic
 from lsy_drone_racing.rl_training.level3_observations import (
     DIRECT_GEOMETRY_DIM,
@@ -61,7 +64,11 @@ from lsy_drone_racing.rl_training.level3_training import (
     _existing_validation_ranks,
     level3_validation_rank,
 )
-from lsy_drone_racing.rl_training.networks import squashed_log_probability
+from lsy_drone_racing.rl_training.networks import (
+    gaussian_entropy,
+    sample_action,
+    squashed_log_probability,
+)
 
 
 def synthetic_level3_observation(num_envs: int = 2) -> dict[str, jax.Array]:
@@ -602,6 +609,15 @@ def test_checkpoint_version_rejection_and_level3_controller_determinism(tmp_path
     assert np.all(first >= np.asarray(low))
     assert np.all(first <= np.asarray(high))
 
+    metadata["config"]["lock_yaw"] = True
+    (tmp_path / METADATA_FILE).write_text(json.dumps(metadata), encoding="utf-8")
+    locked = Controller(obs, {}, controller_config)
+    locked_action = locked.compute_control(obs)
+    unlocked = [index for index in range(4) if index != YAW_ACTION_INDEX]
+    assert locked_action[YAW_ACTION_INDEX] == pytest.approx(0.0, abs=1e-7)
+    np.testing.assert_allclose(locked_action[unlocked], first[unlocked], rtol=1e-6, atol=1e-6)
+    assert float(locked._last_action[0, YAW_ACTION_INDEX]) == 0.0
+
 
 @pytest.mark.unit
 def test_level3_checkpoint_exactly_restores_optimizer_ema_and_typed_key(tmp_path: Path):
@@ -740,3 +756,114 @@ def test_actor_input_ablation_masks_only_the_named_inputs():
     np.testing.assert_allclose(masked.obstacle_tokens[..., [3, 4, 5, 9]], 0.0)
     np.testing.assert_allclose(masked.direct_geometry[:, 22], 0.0)
     np.testing.assert_allclose(masked.gate_tokens[..., :12], actor.gate_tokens[..., :12])
+
+
+@pytest.mark.unit
+def test_yaw_lock_masks_log_probability_entropy_and_profile():
+    keys = jax.random.split(jax.random.key(7), 3)
+    mean = jax.random.normal(keys[0], (5, 4))
+    log_std = 0.3 * jax.random.normal(keys[1], (4,)) - 0.5
+    raw_action = mean + jax.random.normal(keys[2], (5, 4))
+    mask = yaw_action_weights(jnp.zeros(5))
+    free = jnp.asarray([0, 1, 3])
+
+    np.testing.assert_allclose(
+        squashed_log_probability(raw_action, mean, log_std, mask),
+        squashed_log_probability(raw_action[:, free], mean[:, free], log_std[free]),
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(
+        gaussian_entropy(log_std, mask), gaussian_entropy(log_std[free]), rtol=1e-6
+    )
+    np.testing.assert_array_equal(
+        squashed_log_probability(raw_action, mean, log_std, yaw_action_weights(jnp.ones(5))),
+        squashed_log_probability(raw_action, mean, log_std),
+    )
+    _, sampled_raw, sampled_log_probability = sample_action(mean, log_std, keys[0], mask)
+    np.testing.assert_allclose(
+        sampled_log_probability,
+        squashed_log_probability(sampled_raw[:, free], mean[:, free], log_std[free]),
+        rtol=1e-6,
+    )
+    np.testing.assert_array_equal(yaw_action_weights(jnp.asarray(0.0)), [1.0, 1.0, 0.0, 1.0])
+
+    locked = get_level3_profile("level3_v22_yaw_lock")
+    memory = get_level3_profile("level3_v20_memory")
+    assert locked.lock_yaw and not memory.lock_yaw
+    assert locked.yaw_anneal_timesteps == 120_000_000 and memory.yaw_anneal_timesteps == 0
+    assert replace(locked, profile=memory.profile, lock_yaw=False, yaw_anneal_timesteps=0) == memory
+
+
+@pytest.mark.unit
+def test_yaw_authority_schedule_and_config_validation():
+    locked = get_level3_profile("level3_v22_yaw_lock")
+    steps = jnp.asarray([0, 60e6, 120e6, 200e6, locked.curriculum_timesteps])
+    authority = level3_yaw_authority(steps / locked.curriculum_timesteps, locked)
+    np.testing.assert_allclose(authority, [1.0, 0.5, 0.0, 0.0, 0.0], atol=1e-6)
+    assert float(authority[-1]) == 0.0
+
+    hard = locked.with_overrides(yaw_anneal_timesteps=0)
+    np.testing.assert_array_equal(level3_yaw_authority(steps / 5e8, hard), np.zeros(5))
+    memory = get_level3_profile("level3_v20_memory")
+    np.testing.assert_array_equal(level3_yaw_authority(steps / 5e8, memory), np.ones(5))
+
+    with pytest.raises(ValueError, match="requires lock_yaw"):
+        memory.with_overrides(yaw_anneal_timesteps=1)
+    with pytest.raises(ValueError, match="non-negative"):
+        locked.with_overrides(yaw_anneal_timesteps=-1)
+    with pytest.raises(ValueError, match="must not exceed"):
+        locked.with_overrides(yaw_anneal_timesteps=locked.curriculum_timesteps + 1)
+
+
+@pytest.mark.unit
+def test_yaw_weight_selects_masked_or_full_update_log_probability():
+    base = get_level3_profile().with_overrides(
+        device="cpu",
+        num_envs=2,
+        num_steps=2,
+        num_minibatches=1,
+        update_epochs=1,
+        total_timesteps=4,
+        entity_dim=16,
+        fusion_dim=32,
+    )
+    locked = base.with_overrides(lock_yaw=True, yaw_anneal_timesteps=120_000_000)
+    actor, critic = structured_observations(4)
+    model = Level3ActorCritic(entity_dim=16, attention_heads=4, fusion_dim=32)
+    params = model.init(jax.random.key(2), actor, critic)["params"]
+    mean, log_std, value = model.apply({"params": params}, actor, critic)
+    raw_action = mean + 0.3 * jax.random.normal(jax.random.key(4), mean.shape)
+
+    def update(config: object, yaw_weight: jax.Array | None, mask: jax.Array | None) -> dict:
+        state = Level3TrainState.create(
+            apply_fn=model.apply,
+            params=jax.tree.map(jnp.copy, params),
+            tx=build_level3_optimizer(config),
+        )
+        log_probability = squashed_log_probability(raw_action, mean, log_std, mask)
+        rollout = Level3RolloutBatch(
+            actor_observation=jax.tree.map(lambda x: x.reshape((2, 2, *x.shape[1:])), actor),
+            critic_observation=jax.tree.map(lambda x: x.reshape((2, 2, *x.shape[1:])), critic),
+            raw_action=raw_action.reshape((2, 2, 4)),
+            log_probability=log_probability.reshape((2, 2)),
+            value=value.reshape((2, 2)),
+            reward=jnp.arange(4.0).reshape((2, 2)),
+            bootstrap_value=jnp.zeros((2, 2)),
+            terminated=jnp.zeros((2, 2), dtype=bool),
+            truncated=jnp.zeros((2, 2), dtype=bool),
+            yaw_weight=yaw_weight,
+        )
+        _, metrics = make_level3_ppo_update(config)(state, rollout, jax.random.key(3))
+        return jax.device_get(metrics)
+
+    free = update(base, None, None)
+    full = update(locked, jnp.ones((2, 2)), yaw_action_weights(jnp.ones(4)))
+    masked = update(locked, jnp.zeros((2, 2)), yaw_action_weights(jnp.zeros(4)))
+    # The first minibatch evaluates the behavior parameters, so the ratio is exactly one.
+    for metrics in (free, full, masked):
+        assert float(metrics["approx_kl"]) == pytest.approx(0.0, abs=1e-6)
+    mismatched = update(locked, jnp.zeros((2, 2)), yaw_action_weights(jnp.ones(4)))
+    assert float(mismatched["approx_kl"]) > 1e-4
+    assert float(full["entropy"]) == pytest.approx(float(free["entropy"]), rel=1e-6)
+    expected = float(gaussian_entropy(log_std[0, jnp.asarray([0, 1, 3])]))
+    assert float(masked["entropy"]) == pytest.approx(expected, rel=1e-6)

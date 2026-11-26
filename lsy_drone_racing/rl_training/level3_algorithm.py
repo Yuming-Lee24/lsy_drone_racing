@@ -10,6 +10,7 @@ import optax
 from flax import struct
 from flax.training.train_state import TrainState
 
+from lsy_drone_racing.rl_training.level3_config import YAW_ACTION_INDEX
 from lsy_drone_racing.rl_training.networks import gaussian_entropy, squashed_log_probability
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ class Level3RolloutBatch:
     bootstrap_value: Array
     terminated: Array
     truncated: Array
+    yaw_weight: Array | None = None
 
 
 @struct.dataclass
@@ -67,6 +69,26 @@ class Level3TrainingBatch:
     old_value: Array
     advantage: Array
     returns: Array
+    yaw_weight: Array | None = None
+
+
+def level3_yaw_authority(curriculum_progress: Array, config: Level3PPOConfig) -> Array:
+    """Normalized yaw scale ``clip(1 - steps / yaw_anneal_timesteps, 0, 1)``.
+
+    It is 1 without ``lock_yaw`` and 0 for a hard lock (``yaw_anneal_timesteps == 0``).
+    """
+    if not config.lock_yaw:
+        return jnp.ones_like(curriculum_progress, dtype=jnp.float32)
+    if config.yaw_anneal_timesteps == 0:
+        return jnp.zeros_like(curriculum_progress, dtype=jnp.float32)
+    ratio = config.curriculum_timesteps / config.yaw_anneal_timesteps
+    return jnp.clip(1.0 - curriculum_progress * ratio, 0.0, 1.0).astype(jnp.float32)
+
+
+def yaw_action_weights(yaw_weight: Array) -> Array:
+    """Per-dimension log-probability/entropy weights with yaw weighted by ``yaw_weight``."""
+    yaw = jax.nn.one_hot(YAW_ACTION_INDEX, 4, dtype=jnp.float32)
+    return 1.0 - yaw + jnp.asarray(yaw_weight, dtype=jnp.float32)[..., None] * yaw
 
 
 def level3_generalized_advantage_estimate(
@@ -122,6 +144,9 @@ def _flatten_rollout(rollout: Level3RolloutBatch, config: Level3PPOConfig) -> Le
         old_value=rollout.value.reshape(config.batch_size),
         advantage=advantage.reshape(config.batch_size),
         returns=returns.reshape(config.batch_size),
+        yaw_weight=(
+            None if rollout.yaw_weight is None else rollout.yaw_weight.reshape(config.batch_size)
+        ),
     )
 
 
@@ -138,7 +163,11 @@ def build_level3_optimizer(config: Level3PPOConfig) -> optax.GradientTransformat
 
 
 def make_level3_ppo_update(config: Level3PPOConfig) -> Callable:
-    """Return a compiled PPO update with epoch-boundary target-KL stopping."""
+    """Return a compiled PPO update with epoch-boundary target-KL stopping.
+
+    With ``lock_yaw`` the per-sample yaw weight stored by the rollout scales the yaw terms of
+    the log-probability ratio and entropy bonus; a batch without weights treats yaw as locked.
+    """
     minibatch_size = config.minibatch_size
     zero_metrics = {
         "loss": jnp.asarray(0.0),
@@ -156,7 +185,15 @@ def make_level3_ppo_update(config: Level3PPOConfig) -> Callable:
         mean, log_std, value = apply_fn(
             {"params": params}, batch.actor_observation, batch.critic_observation
         )
-        log_probability = squashed_log_probability(batch.raw_action, mean, log_std)
+        action_mask = None
+        if config.lock_yaw:
+            yaw_weight = (
+                jnp.zeros_like(batch.old_log_probability)
+                if batch.yaw_weight is None
+                else batch.yaw_weight
+            )
+            action_mask = yaw_action_weights(yaw_weight)
+        log_probability = squashed_log_probability(batch.raw_action, mean, log_std, action_mask)
         log_ratio = log_probability - batch.old_log_probability
         ratio = jnp.exp(log_ratio)
         advantage = batch.advantage
@@ -178,7 +215,7 @@ def make_level3_ppo_update(config: Level3PPOConfig) -> Callable:
             )
         else:
             value_loss = 0.5 * jnp.mean((value - batch.returns) ** 2)
-        entropy = gaussian_entropy(log_std).mean()
+        entropy = gaussian_entropy(log_std, action_mask).mean()
         total_loss = policy_loss + config.value_coef * value_loss - config.entropy_coef * entropy
         metrics = {
             "loss": total_loss,

@@ -83,7 +83,11 @@ def checkpoint_gate_sequence(metadata: dict[str, Any]) -> tuple[int, ...]:
 def validate_level3_metadata(
     path: Path, config: Level3PPOConfig | None = None, *, exact_resume: bool = False
 ) -> dict[str, Any]:
-    """Validate policy compatibility and, when requested, exact-resume compatibility."""
+    """Validate policy compatibility and, when requested, exact-resume compatibility.
+
+    Configurations saved before the yaw lock existed compare as ``lock_yaw=False`` and
+    ``yaw_anneal_timesteps=0``.
+    """
     directory = path if path.is_dir() else path.parent
     metadata_path = directory / METADATA_FILE
     if not metadata_path.exists():
@@ -104,7 +108,10 @@ def validate_level3_metadata(
             "policy-only compatible."
         )
     expected_config = json.loads(json.dumps(asdict(config))) if config is not None else None
-    if expected_config is not None and metadata.get("config") != expected_config:
+    stored_config = metadata.get("config")
+    if isinstance(stored_config, dict):
+        stored_config = {"lock_yaw": False, "yaw_anneal_timesteps": 0, **stored_config}
+    if expected_config is not None and stored_config != expected_config:
         raise ValueError(
             "Exact resume requires the same Level 3 configuration, including rollout shapes, "
             "optimizer schedule, curriculum budget, and random seed."

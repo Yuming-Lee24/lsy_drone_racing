@@ -343,6 +343,13 @@ benchmark passed at 180,497.43 SPS, 2.14888x the 83,996.06 SPS stored PyTorch re
 time. The ignored report is
 `saves/jax_ppo/performance/level3_v3_route_corridor_jax_10m.json`.
 
+`level3_v22_yaw_lock` is `level3_v20_memory` plus `lock_yaw=True` and
+`yaw_anneal_timesteps=120_000_000`: every Level 3 transition multiplies the normalized yaw by
+`clip(1 - steps / 120M, 0, 1)` before scaling and stores the scaled action in observation memory and
+reward state; yaw stays in PPO log-probabilities and entropy only while that scale is positive.
+Validation/evaluation run at progress 1 and are fully locked (0 rad world yaw), like the controller,
+which honors `lock_yaw` from checkpoint metadata. See `LEVEL3_V2.md` for semantics.
+
 ## Historical Level 2 V2 research notes
 
 The following list predates the selected Level 3 design. Do not implement it over the authoritative
@@ -502,6 +509,10 @@ pixi run -e gpu train-level3-jax-ppo \
   --profile level3_v3_route_corridor \
   --initialize-policy saves/jax_ppo/level3_v3_mixed_curriculum/latest \
   --max-updates 382 --skip-final-evaluation
+# Yaw-annealed fine-tune of the 5-pass v20 policy.
+pixi run -e gpu train-level3-jax-ppo --profile level3_v22_yaw_lock \
+  --initialize-policy saves/jax_ppo/level3_v20_memory_5pass_r2/latest --initialize-policy-ema \
+  --total-timesteps 400000000 --output saves/jax_ppo/level3_v22_yaw_lock
 ```
 
 Compilation time must be reported separately from steady throughput. If a V2 change fails the 2x
