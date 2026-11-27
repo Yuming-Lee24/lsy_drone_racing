@@ -28,6 +28,8 @@ environment reset). Results marked `~` are 500-episode training validations; the
 | 18 | level3_v21_fullinfo (sensor range 10 m: true track visible from reset; diagnostic only, not Level 3 rules; metadata profile name `level3_v21_nominal`) | #17 final EMA | 400M: `level3_fullinfo_sr91.3_lap4.32` | 91.3% / 4.32 s (full-info evaluation) |
 | 19 | level3_v20_memory, 5-pass track `[1, 2, 3, 4, 2]`, Crazyflow 0.4 | #17 final EMA (62.7% / 6.20 s on this track before training) | 400M: `level3_v20_memory_5pass` | 87.7% / 6.12 s |
 | 20 | level3_v20_memory, 5-pass track | #19 final EMA | 400M: `level3_v20_memory_5pass_r2` | 89.0% / 6.10 s |
+| 21 | level3_v22_yaw_lock (yaw authority annealed to 0 over 120M, then 0 rad), 5-pass track | #20 final EMA | 400M: `level3_v22_yaw_lock` | 72.8% / 6.84 s (yaw locked) |
+| 22 | level3_v22_yaw_lock_hard (yaw locked from step 0), 5-pass track | #21 final EMA | 400M: `level3_v22_yaw_lock_hard` | 79.9% / 6.54 s (yaw locked) |
 
 Dead ends: `level3_v2_explore_pilot50m` (random init, entropy blow-up) and `level3_v5_safe_r1`
 (from #2, optimizer froze); #3 re-branched from #2.
@@ -39,4 +41,4 @@ Logs record the pre-rename folder names: `level3_v12_refine_r1` = #9, `level3_v1
 
 Snapshots #2-#8 are copies of a run's `latest`/`best_*`; their profile and step count match the
 source run, but the copy itself was not logged. Runs #1-#15 used uncommitted code at the time;
-GPU training is not bitwise deterministic. Runs #19-#20 used commit `429ecdb`.
+GPU training is not bitwise deterministic. Runs #19-#20 used commit `429ecdb`, #21 `ad55175`, #22 `73de39f`.
