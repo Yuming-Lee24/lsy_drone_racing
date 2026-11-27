@@ -42,3 +42,7 @@ Logs record the pre-rename folder names: `level3_v12_refine_r1` = #9, `level3_v1
 Snapshots #2-#8 are copies of a run's `latest`/`best_*`; their profile and step count match the
 source run, but the copy itself was not logged. Runs #1-#15 used uncommitted code at the time;
 GPU training is not bitwise deterministic. Runs #19-#20 used commit `429ecdb`, #21 `ad55175`, #22 `73de39f`.
+
+Runs #19-#22 trained and were evaluated without the stands of the tall gates 2 and 4 (upstream
+#165 bug, fixed by #173 in `738c3e7`). Re-evaluated with stands: #20 89.06% / 6.10 s, #22 79.88% /
+6.54 s.
